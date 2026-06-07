@@ -1661,7 +1661,7 @@
                         (procs spec-st))
     (memberp i ids)
 
-    msg
+    msg  
     ;; The spec receive must use the same normal application message.
     (equal
      msg
@@ -1935,11 +1935,27 @@
     (handle-normal-msg-core st i j msg))
    (remove-message-from-channel j i (channels st))))
 
-(defthm channels-of-spec-step-rcv
-  (equal
-   (channels
-    (spec-step-rcv st i j))
-   (remove-message-from-channel j i (channels st))))
+;; (defthm channels-of-spec-step-rcv
+;;   (equal
+;;    (channels
+;;     (spec-step-rcv st i j))
+;;    (remove-message-from-channel j i (channels st))))
+
+(defthm channels-of-spec-step-rcv-when-msg
+  (implies
+   (get-msg-from-channel j i (channels st))
+   (equal
+    (channels
+     (spec-step-rcv st i j))
+    (remove-message-from-channel j i (channels st)))))
+
+(defthm channels-of-spec-step-rcv-when-no-msg
+  (implies
+   (not (get-msg-from-channel j i (channels st)))
+   (equal
+    (channels
+     (spec-step-rcv st i j))
+    (channels st))))
 
 ;end normal receive: channel equivalence after consuming normal messages
 

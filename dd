@@ -1,0 +1,26 @@
+
+(IMPLIES
+ (AND (INCOMING-CHANNELS-EQUIVALENT-FOR-PROC-P
+           OPEN-SRCS (G :PID INPUT)
+           (G :CHANNELS ST)
+           (G :CHANNELS (RUN-SPEC SPEC-START-ST
+                                  (REPLAY-INPUTS-FOR-ONE-PROC (G :PID INPUT)
+                                                              NBRS M))))
+      (MEMBERP (G :SENDER INPUT) OPEN-SRCS)
+      (EQUAL (G :TTYPE INPUT) :RECEIVE)
+      (CONSP (G (G :SENDER INPUT)
+                (G (G :PID INPUT) (G :CHANNELS ST))))
+ 
+ (INCOMING-CHANNELS-EQUIVALENT-FOR-PROC-P
+   OPEN-SRCS (G :PID INPUT)
+   (REMOVE-MESSAGE-FROM-CHANNEL (G :SENDER INPUT)
+                                (G :PID INPUT)
+                                (G :CHANNELS ST))
+   (G :CHANNELS
+      (RUN-SPEC
+           SPEC-START-ST
+           (REPLAY-INPUTS-FOR-ONE-PROC (G :PID INPUT)
+                                       NBRS
+                                       (CM-AFTER-CUT-APPEND M (G :PID INPUT)
+                                                            (G :SENDER INPUT)
+                                                            INPUT))))))
