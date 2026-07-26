@@ -1,0 +1,108 @@
+;;We need to prove for one checkpoint-start to recovery-done segment, if we start the implementation and spec st, where they are equivalent meaning their local-state are same and the spec and the implementation channel are equivalent,
+;; let
+;;     input-cp-rc-seg is such a segment
+;;     imp-st is implementation state
+;;     spec-st is specification state
+;;     imp-spec-equivalent(imp-st, spec-st)
+;; where
+;;       imp-spec-equivalent = proc-equivalent . imp-spec-channel-equivalent
+;;       proc-equivalent = for all process id, local-state of imp proc and spec proc are equal, neighbour list are same
+;;       imp-spec-channel-equivalent = for all process id, incoming channels of imp-ch and spec-ch are equivalent
+;;       incoming-channel-equivalent = spec channel is normal msg projection of spec channel. order and 
+;; we want to prove
+;;     imp-spec-equivalent ( run-imp (imp-st, input-cp-rc-seg) , run-spec (spec-st, spec-input-generation (input-cp-rc-seg))  )
+
+;; For one segment, spec-input-generation reduces to the following:
+
+(defun generate-segment-inputs (st cm-meta rm-meta)
+  ;; Final compressed input sequence for one checkpoint-recovery segment:
+  ;;   1. inputs-before-cut
+  ;;   2. replayed buffered inputs from cut-meta
+  ;;   3. preserved inputs during recovery
+  (append (cm-inputs-before-cut cm-meta)
+          (append (replay-inputs-from-cut-meta st cm-meta)
+                  (rm-inputs-during-recovery rm-meta))))
+
+;; First, we need to prove for all proc id, local-state of spec-st and imp-st remains same
+;; cm-meta and rm-meta are meta-records collected by scan-until-cut-done and scan-until-recovery-done
+;; functions respectively. st is just used to get neighbour list for each proc.
+;;
+;; Here, (cm-inputs-before-cut cm-meta) contains all the inputs for all procs before each
+;;       procs receives its first marker. At that point, proc records its local-state in snapshot entry. 
+;;       We focus on this part first.
+;;       We need to prove,
+;;   if
+;;      local state of all proc id matces for imp and spec at the start of input-cp-rc-seg,
+;;   then
+;;     for each proc id i,
+;;   equal
+;;     local-state of (run-imp (imp-st  inputix))
+;;     local-state of (run-spec (spec-st inputs-before-cut))
+;;     local-state stored in snapshot entry
+;; where inputix is a segment within input-cp-rc-seg when proc i receives its first marker (for non-initiator)
+;; To help prove the above target we proved for the following lemma;
+
+(defthm cut-scan-spec-imp-local-match-over-input-segment
+  (implies
+   (and
+    ;; Local-state invariant at the beginning of the segment.
+    (cut-scan-spec-imp-local-match-p
+     i m st spec-start-st)
+
+    ;; Process i remains before its first marker throughout the segment.
+    (cut-scan-proc-stays-cut-not-taken-p
+     i inputs st m)
+
+    ;; Every input is legal along the implementation run.
+    (legal-input-sequencep st inputs)
+
+    ;; At each step, if the relevant implementation channel head is normal,
+    ;; then the corresponding spec/imp channel heads match.
+    (cut-scan-channel-msg-match-segment-p
+     inputs st m spec-start-st)
+
+    ;; No recovery behavior occurs anywhere in this segment.
+    (cut-scan-no-recovery-segment-p
+     inputs st))
+
+   ;; Local-state invariant after the whole segment.
+   (cut-scan-spec-imp-local-match-p
+    i
+    (process-cut-segment inputs st m)
+    (run-imp st inputs)
+    spec-start-st)))
+
+
+(defun cut-scan-spec-imp-local-match-p
+    (i  m imp-st spec-start-st)
+   (equal
+    (local-state
+     (g i
+        (procs
+         (run-spec spec-start-st
+                   (cm-inputs-before-cut m)))))
+    (local-state
+     (g i
+        (procs imp-st)))))
+
+
+(defun cut-scan-proc-stays-cut-not-taken-step-p (i input st m)
+  (let ((m-next (process-cut-step input st m)))
+    (and
+     (memberp i (cm-cut-not-taken m))
+     (memberp i (cm-cut-not-taken m-next)))))
+
+
+(defun cut-scan-proc-stays-cut-not-taken-p (i inputs st m)
+  (if (endp inputs)
+      (memberp i (cm-cut-not-taken m))
+    (let* ((input  (first inputs))
+           (m-next (process-cut-step input st m))
+           (st-next (system-step st input)))
+      (and
+       (cut-scan-proc-stays-cut-not-taken-step-p i input st m)
+       (cut-scan-proc-stays-cut-not-taken-p
+        i
+        (rest inputs)
+        st-next
+        m-next)))))

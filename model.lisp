@@ -583,14 +583,40 @@
 ;;   replay saved snapshot traffic -> handle first recovery message ->
 ;;   handle later recovery messages -> dispatch by recovery status.
 ;; ---------------------------------------------------------------
+
+
+
+
+
+
+;; (defun replay-msgs-on-channel (local-state msgs j)
+;;   (cond ((endp msgs)
+;;          local-state)
+;;         (t
+;;          (replay-msgs-on-channel
+;;           (update-local-state-rcv local-state (first msgs) j)
+;;           (rest msgs)
+;;           j))))
+
+
 (defun replay-msgs-on-channel (local-state msgs j)
   (cond ((endp msgs)
          local-state)
+
+        ;; Match spec-step-rcv behavior:
+        ;; if the receive finds no message, local state is unchanged.
+        ((not (first msgs))
+         (replay-msgs-on-channel
+          local-state
+          (rest msgs)
+          j))
+
         (t
          (replay-msgs-on-channel
           (update-local-state-rcv local-state (first msgs) j)
           (rest msgs)
           j))))
+
 
 (defun replay-channel-snapshots (local-state channel-snaps nbrs-from)
   (cond ((endp nbrs-from)
