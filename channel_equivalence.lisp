@@ -8,7 +8,7 @@
 
 (include-book "model")
 
-(include-book "invariants")
+(include-book "good_state_invariants")
 
 ;end setup
 

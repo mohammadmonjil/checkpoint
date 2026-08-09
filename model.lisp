@@ -1242,12 +1242,72 @@
  
 
 
+;; (defun legal-inputp (st input)
+;;   (let* ((tp    (ttype input))
+;;          (i     (pid input))
+;;          (j     (sender input))
+;;          (ids   (proc-ids st))
+;;          (procs (procs st)))
+;;     (cond
+;;      ((equal tp :nop)
+;;       t)
+
+;;      ;; Normal computation requires a valid process id.
+;;      ((equal tp :normal)
+;;       (memberp i ids))
+
+;;      ;; A receive is legal only if:
+;;      ;;   - receiver i is a valid process,
+;;      ;;   - sender j is a valid process,
+;;      ;;   - j is an incoming neighbor of i,
+;;      ((equal tp :receive)
+;;       (and
+;;        (memberp i ids)
+;;        (memberp j ids)
+;;        (memberp j (nbrs-from (g i procs)))))
+
+;;      ;; A checkpoint can start during normal execution or during another
+;;      ;; checkpoint, but not while any process is recovering.
+;;      ((equal tp :start-checkpoint)
+;;       (and
+;;        (memberp i ids)
+;;        (not (any-process-recovering-p st))))
+
+;;      ;; A crash is illegal during checkpointing or recovery.
+;;      ((equal tp :crash)
+;;       (and
+;;        (memberp i ids)
+;;        (not (any-process-recovering-p st))
+;;        (not (any-snapshot-checkpointing-p st))))
+
+;;      ;; A recovery is illegal during checkpointing or recovery.
+;;      ;; In addition, the recovery sid must be known by every process,
+;;      ;; because recovery messages may be forwarded.
+;;      ((equal tp :recover)
+;;       (and
+;;        (memberp i ids)
+;;       (not (any-process-recovering-p st))
+;;       (not (any-snapshot-checkpointing-p st))
+;;        (all-procs-have-snapshot-id-p
+;;         (car (snapshot-ids (g i procs)))
+;;         ids
+;;         procs)
+;;        )
+;;       )
+
+;;      ;; Unknown input types are not legal.
+;;      (t
+;;       nil))))
+
+
+
 (defun legal-inputp (st input)
-  (let* ((tp    (ttype input))
-         (i     (pid input))
-         (j     (sender input))
-         (ids   (proc-ids st))
-         (procs (procs st)))
+  (let* ((tp       (ttype input))
+         (i        (pid input))
+         (j        (sender input))
+         (ids      (proc-ids st))
+         (procs    (procs st))
+         (channels (channels st)))
     (cond
      ((equal tp :nop)
       t)
@@ -1257,47 +1317,73 @@
       (memberp i ids))
 
      ;; A receive is legal only if:
-     ;;   - receiver i is a valid process,
-     ;;   - sender j is a valid process,
-     ;;   - j is an incoming neighbor of i,
+     ;;   - receiver i is a valid process;
+     ;;   - sender j is a valid process;
+     ;;   - j is an incoming neighbor of i;
+     ;;   - channel j -> i contains a message to consume.
+     ;;
+     ;; We do not require the message to be :normal here because the
+     ;; implementation also receives :marker and :recovery messages
+     ;; through the generic :receive input.
      ((equal tp :receive)
       (and
        (memberp i ids)
+
        (memberp j ids)
-       (memberp j (nbrs-from (g i procs)))))
+
+       (memberp
+        j
+        (nbrs-from
+         (g i procs)))
+
+       (consp
+        (channel-state
+         j
+         i
+         channels))))
 
      ;; A checkpoint can start during normal execution or during another
      ;; checkpoint, but not while any process is recovering.
      ((equal tp :start-checkpoint)
       (and
        (memberp i ids)
-       (not (any-process-recovering-p st))))
+
+       (not
+        (any-process-recovering-p st))))
 
      ;; A crash is illegal during checkpointing or recovery.
      ((equal tp :crash)
       (and
        (memberp i ids)
-       (not (any-process-recovering-p st))
-       (not (any-snapshot-checkpointing-p st))))
+
+       (not
+        (any-process-recovering-p st))
+
+       (not
+        (any-snapshot-checkpointing-p st))))
 
      ;; A recovery is illegal during checkpointing or recovery.
-     ;; In addition, the recovery sid must be known by every process,
-     ;; because recovery messages may be forwarded.
+     ;; The recovery SID must be known by every process because recovery
+     ;; messages may be forwarded.
      ((equal tp :recover)
       (and
        (memberp i ids)
-      (not (any-process-recovering-p st))
-      (not (any-snapshot-checkpointing-p st))
+
+       (not
+        (any-process-recovering-p st))
+
+       (not
+        (any-snapshot-checkpointing-p st))
+
        (all-procs-have-snapshot-id-p
-        (car (snapshot-ids (g i procs)))
+        (car
+         (snapshot-ids
+          (g i procs)))
         ids
-        procs)
-       )
-      )
+        procs)))
 
      ;; Unknown input types are not legal.
-     (t
-      nil))))
+     (t nil))))
 
 
 
@@ -1631,3 +1717,6 @@
         (map-procs-to-spec-procs ids imp-procs)
         :channels
         (project-channels-to-spec ids imp-channels))))
+
+
+

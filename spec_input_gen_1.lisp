@@ -1,7 +1,7 @@
 
 (in-package "ACL2")
 (include-book "model")
-(include-book "good_state_invariants")	
+(include-book "good_state_invariants")
 (include-book "channel_equivalence")
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Section 3: Compressed Input Generation 
@@ -223,78 +223,6 @@
 ;;     the recovered computation.
 ;; ------------------------------------------------------------------
 
-
-(defun current-msg-for-receive (input st)
-  (let* ((i        (pid input))
-         (j        (sender input))
-         (channels (channels st)))
-    (get-msg-from-channel j i channels)))
-
-(defun make-nop-input (input)
-  (update input :ttype :nop))
-
-(defun spec-compatible-input (input st)
-  ;; Convert any implementation-only input into a spec no-op.
-  ;; Keep:
-  ;;   :normal
-  ;;   :receive only when the consumed msg is :normal
-  ;; Convert to :nop:
-  ;;   :start-checkpoint, :recover, :crash
-  ;;   :receive when the consumed msg is :marker or :recovery
-  (cond
-   ((equal (ttype input) :normal)
-    input)
-
-   ((equal (ttype input) :receive)
-    (let ((msg (current-msg-for-receive input st)))
-      (if (equal (msg-type msg) :normal)
-          input
-        (make-nop-input input))))
-
-   (t
-    (make-nop-input input))))
-
-
-(defun spec-compatible-input-sequence (st inputs)
-  ;; Convert each implementation input using the implementation
-  ;; state immediately before that input executes.
-  (declare
-   (xargs :measure (acl2-count inputs)))
-
-  (if (endp inputs)
-      nil
-
-    (let* ((input   (first inputs))
-           (st-next (system-step st input)))
-
-      (cons
-       (spec-compatible-input input st)
-
-       (spec-compatible-input-sequence
-        st-next
-        (rest inputs))))))
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Unified cut scan
-;;
-;; This is a drop-in replacement for the existing cut-metadata/scan block.
-;; Existing names are preserved.  The only new global metadata field is:
-;;
-;;   :after-cut-input-sequence
-;;
-;; It contains every ordinary input whose process had already taken its cut,
-;; in the original global execution order.
-;;
-;; The older :inputs-after-cut field is preserved unchanged.  It remains the
-;; channel-wise table of receives recorded while an incoming channel is open.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; ------------------------------------------------------------------
-;; Existing metadata accessors
-;; ------------------------------------------------------------------
-
-
 (defmacro cm-sid (m)
   `(g :sid ,m))
 
@@ -310,26 +238,8 @@
 (defun cm-inputs-before-cut (m)
   (g :inputs-before-cut m))
 
-;; Existing channel-wise table:
-;;   process i -> incoming neighbor j -> receive-input list.
 (defun cm-inputs-after-cut (m)
   (g :inputs-after-cut m))
-
-;; Existing channel-wise table of the actual normal messages consumed by
-;; the receive inputs in :inputs-after-cut.
-(defun cm-after-cut-msgs (m)
-  (g :after-cut-msgs m))
-
-;; ------------------------------------------------------------------
-;; New accessor: global post-cut ordinary-input sequence
-;; ------------------------------------------------------------------
-
-(defun cm-after-cut-input-sequence (m)
-  (g :after-cut-input-sequence m))
-
-;; Optional alias with the words in the opposite order.
-(defun cm-inputs-after-cut-sequence (m)
-  (cm-after-cut-input-sequence m))
 
 (defun cm-waiting-marker-for (m i)
   (g i (cm-waiting-marker-from m)))
@@ -349,70 +259,46 @@
 
 (defun cm-add-before-cut (m input)
   (s :inputs-before-cut
-     (append
-      (cm-inputs-before-cut m)
-      (list input))
+     (append (cm-inputs-before-cut m) (list input))
      m))
-
-(defun cm-add-after-cut-input-sequence (m input)
-  (s :after-cut-input-sequence
-     (append
-      (cm-after-cut-input-sequence m)
-      (list input))
-     m))
-
-(defun cm-before-cut-input-sequence (m)
-  `(g :before-cut-input-sequence ,m))
-
-
-(defun cm-add-before-cut-input-sequence (m input)
-  (s :before-cut-input-sequence
-     (append
-      (cm-before-cut-input-sequence m)
-      (list input))
-     m))
-
-;; ------------------------------------------------------------------
-;; Existing channel-wise after-cut input operations
-;; ------------------------------------------------------------------
 
 (defun cm-after-cut-get (m i j)
-  (let ((rec-i (g i (cm-inputs-after-cut m))))
+  (let* ((rec-i (g i (cm-inputs-after-cut m))))
     (g j rec-i)))
 
 (defun cm-after-cut-append (m i j input)
   (let* ((all   (cm-inputs-after-cut m))
          (rec-i (g i all))
          (old   (g j rec-i))
-         (rec-i
-          (s j
-             (append old (list input))
-             rec-i))
+         (rec-i (s j (append old (list input)) rec-i))
          (all   (s i rec-i all)))
     (s :inputs-after-cut all m)))
 
-;; ------------------------------------------------------------------
-;; Existing channel-wise after-cut message operations
-;; ------------------------------------------------------------------
+(defun cut-done-p (m)
+  (if (equal (cm-sid m) :init)
+      t
+      (endp (cm-cut-not-taken m))))
 
-(defun cm-after-cut-msg-get (m i j)
-  (let ((rec-i (g i (cm-after-cut-msgs m))))
-    (g j rec-i)))
 
-(defun cm-after-cut-msg-append (m i j msg)
-  (let* ((all   (cm-after-cut-msgs m))
-         (rec-i (g i all))
-         (old   (g j rec-i))
-         (rec-i
-          (s j
-             (append old (list msg))
-             rec-i))
-         (all   (s i rec-i all)))
-    (s :after-cut-msgs all m)))
+(defun all-local-cuts-taken-p (m)
+  (if (equal (cm-sid m) :init)
+      t
+      (endp (cm-cut-not-taken m))))
 
-;; ------------------------------------------------------------------
-;; Metadata construction
-;; ------------------------------------------------------------------
+
+(defun all-waiting-marker-empty-p (ids m)
+  (if (endp ids)
+      t
+    (and
+     (endp (cm-waiting-marker-for m (car ids)))
+     (all-waiting-marker-empty-p (cdr ids) m))))
+
+(defun checkpoint-collection-complete-p (m)
+  (if (equal (cm-sid m) :init)
+      t
+    (and
+     (endp (cm-cut-not-taken m))
+     (all-waiting-marker-empty-p (cm-proc-ids m) m))))
 
 (defun make-inputs-after-cut-for-proc (nbrs)
   (if (endp nbrs)
@@ -424,28 +310,11 @@
 (defun make-inputs-after-cut (proc-ids procs)
   (if (endp proc-ids)
       nil
-    (let* ((i         (first proc-ids))
-           (p         (g i procs))
-           (nbrs      (nbrs-from p))
-           (entry-i   (make-inputs-after-cut-for-proc nbrs))
-           (rest-recs (make-inputs-after-cut (rest proc-ids) procs)))
-      (s i entry-i rest-recs))))
-
-(defun make-after-cut-msgs-for-proc (nbrs)
-  (if (endp nbrs)
-      nil
-    (s (first nbrs)
-       nil
-       (make-after-cut-msgs-for-proc (rest nbrs)))))
-
-(defun make-after-cut-msgs (proc-ids procs)
-  (if (endp proc-ids)
-      nil
-    (let* ((i         (first proc-ids))
-           (p         (g i procs))
-           (nbrs      (nbrs-from p))
-           (entry-i   (make-after-cut-msgs-for-proc nbrs))
-           (rest-recs (make-after-cut-msgs (rest proc-ids) procs)))
+      (let* ((i         (first proc-ids))
+	     (p (g i procs))
+             (nbrs      (nbrs-from p))
+             (entry-i   (make-inputs-after-cut-for-proc nbrs))
+             (rest-recs (make-inputs-after-cut (rest proc-ids) procs)))
       (s i entry-i rest-recs))))
 
 (defun make-empty-waiting-marker-from (proc-ids)
@@ -455,27 +324,63 @@
        nil
        (make-empty-waiting-marker-from (rest proc-ids)))))
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Snapshot/channel messages saved in cut metadata
+;; Same shape/order as :inputs-after-cut
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun cm-msgs-after-cut (m)
+  (g :msgs-after-cut m))
+
+(defun make-msgs-after-cut-for-proc (nbrs)
+  (if (endp nbrs)
+      nil
+    (s (first nbrs)
+       nil
+       (make-msgs-after-cut-for-proc (rest nbrs)))))
+
+(defun make-msgs-after-cut (proc-ids procs)
+  (if (endp proc-ids)
+      nil
+    (let* ((i         (first proc-ids))
+           (p         (g i procs))
+           (nbrs      (nbrs-from p))
+           (entry-i   (make-msgs-after-cut-for-proc nbrs))
+           (rest-recs (make-msgs-after-cut (rest proc-ids) procs)))
+      (s i entry-i rest-recs))))
+
+(defun cm-after-cut-msg-get (m i j)
+  (let* ((rec-i (g i (cm-msgs-after-cut m))))
+    (g j rec-i)))
+
+(defun cm-after-cut-msg-append (m i j msg)
+  (let* ((all   (cm-msgs-after-cut m))
+         (rec-i (g i all))
+         (old   (g j rec-i))
+         (rec-i (s j (append old (list msg)) rec-i))
+         (all   (s i rec-i all)))
+    (s :msgs-after-cut all m)))
+
+
 (defun make-cut-meta (sid initiator st)
-  ;; Preserve the old convention: the initiator is already treated as having
-  ;; taken its cut when this metadata is created.  Therefore the matching
-  ;; :start-checkpoint input itself remains a protocol step and is ignored by
-  ;; process-cut-step.
   (let* ((procs    (procs st))
          (proc-ids (proc-ids st))
          (p        (g initiator procs))
          (nbrs     (nbrs-from p))
          (m        nil)
-         ;; New global post-cut sequence.
-         (m        (s :after-cut-input-sequence nil m))
-	 (m        (s :before-cut-input-sequence nil m))
-	 
-         ;; Existing channel-wise data.
-         (m        (s :after-cut-msgs
-                      (make-after-cut-msgs proc-ids procs)
-                      m))
+
+         ;; Buffered inputs after cut.
          (m        (s :inputs-after-cut
                       (make-inputs-after-cut proc-ids procs)
                       m))
+
+         ;; Buffered actual messages saved in snapshot/channel snapshot.
+         ;; Same shape as :inputs-after-cut.
+         (m        (s :msgs-after-cut
+                      (make-msgs-after-cut proc-ids procs)
+                      m))
+
          (m        (s :inputs-before-cut nil m))
          (m        (s :waiting-marker-from
                       (s initiator
@@ -488,231 +393,112 @@
          (m        (s :proc-ids proc-ids m))
          (m        (s :sid sid m)))
     m))
-
 ;; ------------------------------------------------------------------
-;; Full checkpoint-completion predicate
+;; Cut-phase step processing
+;;
+;; These functions implement the checkpoint-side scan one input at a
+;; time.  They inspect each implementation input together with the
+;; corresponding pre-state from the trace and update the cut metadata.
+;;
+;; Cases:
+;;   - :normal
+;;       preserve it only if the process has not yet taken its cut.
+;;
+;;   - :receive carrying :marker
+;;       update cut-taken / waiting-marker-from information if sid matches.
+;;       ignore the input is sid not matches (situation while multiple
+;;       checkpointing is happening concurrently)
+;;
+;;   - :receive carrying :normal
+;;       preserve it immediately if the receiver has not taken its cut;
+;;       otherwise buffer it only if that channel is still waiting for
+;;       a marker.
+;;
+;;   - protocol-only traffic that does not contribute to the spec
+;;       leaves the metadata unchanged.
 ;; ------------------------------------------------------------------
-
-(defun all-waiting-marker-empty-p (ids m)
-  (if (endp ids)
-      t
-    (and (endp (cm-waiting-marker-for m (first ids)))
-         (all-waiting-marker-empty-p (rest ids) m))))
-
-(defun checkpoint-collection-complete-p (m)
-  (if (equal (cm-sid m) :init)
-      t
-    (and (endp (cm-cut-not-taken m))
-         (all-waiting-marker-empty-p
-          (cm-proc-ids m)
-          m))))
-
-;; Keep the old name available.  It now denotes full checkpoint collection
-;; completion, rather than only "all local cuts have occurred."
-(defun cut-done-p (m)
-  (checkpoint-collection-complete-p m))
-
-;; ------------------------------------------------------------------
-;; One-step processing
-;; ------------------------------------------------------------------
-
-;; (defun process-cut-normal (input m)
-;;   ;; Every ordinary local step belongs to exactly one global list.
-;;   (let ((i (pid input)))
-;;     (if (cm-cut-not-taken-p m i)
-;;         (cm-add-before-cut m input)
-;;       (cm-add-after-cut-input-sequence m input))))
-
-(defun process-cut-marker-receive (i j st m)
-  (let ((procs (procs st)))
-    (if (cm-cut-not-taken-p m i)
-        ;; First marker for i: i takes its cut.  The channel j -> i is
-        ;; closed immediately, while the other incoming channels remain open.
-        (let* ((p    (g i procs))
-               (nbrs (nbrs-from p))
-               (ws   (remove1-equal j nbrs))
-               (m    (cm-remove-cut-not-taken m i)))
-          (cm-set-waiting-marker-for m i ws))
-      ;; Later marker for i: close only j -> i.
-      (cm-set-waiting-marker-for
-       m i
-       (remove1-equal j
-                      (cm-waiting-marker-for m i))))))
-
-
-;; (defun process-cut-normal-receive (input i j msg m)
-;;   (if (cm-cut-not-taken-p m i)
-
-;;       ;; Receive occurs before process i takes its cut.
-;;       (cm-add-before-cut m input)
-
-;;     ;; Receive occurs after process i takes its cut.
-;;     (let
-;;         ((old-result
-;;           (if
-;;               ;; The incoming channel j -> i is still open.
-;;               (memberp j
-;;                        (cm-waiting-marker-for m i))
-
-;;               ;; Preserve the original metadata updates exactly.
-;;               (cm-after-cut-msg-append
-;;                (cm-after-cut-append
-;;                 m i j input)
-;;                i j msg)
-
-;;             ;; The marker from j has already arrived, so this receive
-;;             ;; is not added to the channel-wise snapshot rows.
-;;             m)))
-
-;;       ;; Add the input to the new global post-cut sequence only after
-;;       ;; all original metadata updates have finished.
-;;       (cm-add-after-cut-input-sequence
-;;        old-result
-;;        input))))
-
 
 (defun process-cut-normal (input m)
-  ;; Preserve only the existing local-state replay metadata here.
   (let ((i (pid input)))
     (if (cm-cut-not-taken-p m i)
         (cm-add-before-cut m input)
       m)))
 
+(defun process-cut-marker-receive (i j st m)
+  (let* ((procs (procs st)))
+    (if (cm-cut-not-taken-p m i)
+        ;; first marker for i: i now takes its cut
+        (let* ((p    (g i procs))
+	       (nbrs (nbrs-from p))
+               (ws   (remove1-equal j nbrs))
+               (m    (cm-remove-cut-not-taken m i)))
+          (cm-set-waiting-marker-for m i ws))
+      ;; later marker for i: just remove sender j from waiting set
+      (cm-set-waiting-marker-for
+       m i
+       (remove1-equal j (cm-waiting-marker-for m i))))))
+
 
 (defun process-cut-normal-receive (input i j msg m)
   (if (cm-cut-not-taken-p m i)
-
-      ;; Preserve the existing local-state replay metadata.
+      ;; Before i takes its cut, this input belongs to inputs-before-cut.
+      ;; It is not part of i's channel snapshot.
       (cm-add-before-cut m input)
 
-    ;; Preserve only the channel-wise snapshot metadata here.
-    (if (memberp j
-                 (cm-waiting-marker-for m i))
+    ;; After i has taken its cut, if marker from j has not arrived yet,
+    ;; then a normal receive from j is exactly a channel-snapshot message.
+    (if (memberp j (cm-waiting-marker-for m i))
+        (let* ((m (cm-after-cut-append m i j input))
+               (m (cm-after-cut-msg-append m i j msg)))
+          m)
+      m)))
 
-        (cm-after-cut-msg-append
-         (cm-after-cut-append
-          m i j input)
-         i j msg)
 
-	m)))
-
+(defun current-msg-for-receive (input st)
+  ;; Replace SRC with your actual sender accessor for receive inputs.
+  (let* ((i        (pid input))
+         (j        (sender input))
+         (channels (channels st)))
+    (get-msg-from-channel j i channels)))
 
 (defun process-cut-receive (input st m)
+  ;; Handle one :receive input during the cut-building phase.
+  ;; If marker sid does not match, that input is dropped too.
   (let* ((i   (pid input))
          (j   (sender input))
          (msg (current-msg-for-receive input st))
          (sid (cm-sid m)))
     (cond
-     ;; Matching checkpoint marker: update cut/open-channel metadata only.
      ((and (equal (msg-type msg) :marker)
            (equal (sid msg) sid))
       (process-cut-marker-receive i j st m))
 
-     ;; An actual ordinary receive is classified as pre or post.
      ((equal (msg-type msg) :normal)
       (process-cut-normal-receive input i j msg m))
 
-     ;; Recovery messages, markers for another SID, and empty receives are
-     ;; protocol/nonordinary steps for this scan.
-     (t m))))
-
-;; (defun process-cut-step (input st m)
-;;   ;; Existing name and argument order are unchanged.
-;;   (cond
-;;    ((equal (ttype input) :start-checkpoint)
-;;     ;; make-cut-meta already accounts for the initiator's local cut.
-;;     m)
-
-;;    ((equal (ttype input) :normal)
-;;     (process-cut-normal input m))
-
-;;    ((equal (ttype input) :receive)
-;;     (process-cut-receive input st m))
-
-;;    (t m)))
-
-
+     (t
+      m))))
 
 (defun process-cut-step (input st m)
-  (let* ((spec-input
-          (spec-compatible-input input st))
+  ;; Process one implementation input while scanning from cp-start
+  ;; until checkpoint completion.
+  (cond
+   ((equal (ttype input) :start-checkpoint)
+    ;; Usually only the initiator's start-checkpoint matters here.
+    ;; Since make-cut-meta already accounts for the initiator having
+    ;; taken its cut, we do nothing.
+    ;; If this is checkpointing input for a new sid we drop that too
+    m)
 
-         (m-core
-          (cond
-           ((equal (ttype input) :start-checkpoint)
-            m)
+   ((equal (ttype input) :normal)
+    (process-cut-normal input m))
 
-           ((equal (ttype input) :normal)
-            (process-cut-normal input m))
+   ((equal (ttype input) :receive)
+    (process-cut-receive input st m))
 
-           ((equal (ttype input) :receive)
-            (process-cut-receive input st m))
+   (t
+    m)))
 
-           (t
-            m)))
-
-         (i (pid input)))
-
-    (if (cm-cut-not-taken-p m-core i)
-
-        (cm-add-before-cut-input-sequence
-         m-core spec-input)
-
-      (cm-add-after-cut-input-sequence
-       m-core spec-input))))
-
-
-;; (defun process-cut-step (input st m)
-;;   (let*
-;;       (;; Conversion uses the implementation state before INPUT.
-;;        (spec-input
-;;         (spec-compatible-input input st))
-
-;;        ;; First perform all original cut and channel metadata updates.
-;;        (m-core
-;;         (cond
-;;          ((equal (ttype input) :start-checkpoint)
-;;           m)
-
-;;          ((equal (ttype input) :normal)
-;;           (process-cut-normal input m))
-
-;;          ((equal (ttype input) :receive)
-;;           (process-cut-receive input st m))
-
-;;          (t
-;;           m)))
-
-;;        (i (pid input)))
-
-;;     ;; Store every compatible input exactly once in one global sequence.
-;;     ;; Use M-CORE so an input that causes the process to take its cut
-;;     ;; is placed in the after-cut sequence.
-;;     (if (cm-cut-not-taken-p m-core i)
-
-;;         (cm-add-before-cut-input-sequence
-;;          m-core
-;;          spec-input)
-
-;;       (cm-add-after-cut-input-sequence
-;;        m-core
-;;        spec-input))))
-
-;; Existing recursive segment function; old lemmas can continue to use it.
-(defun process-cut-segment (inputs st m)
-  (declare (xargs :measure (acl2-count inputs)))
-  (if (endp inputs)
-      m
-    (let* ((input   (first inputs))
-           (m-next  (process-cut-step input st m))
-           (st-next (system-step st input)))
-      (process-cut-segment (rest inputs)
-                           st-next
-                           m-next))))
-
-;; ------------------------------------------------------------------
-;; Existing scan result names
-;; ------------------------------------------------------------------
 
 (defmacro cut-result-idx (r)
   `(g :cut-done-index ,r))
@@ -720,9 +506,12 @@
 (defmacro cut-result-meta (r)
   `(g :cut-meta ,r))
 
-;; ------------------------------------------------------------------
-;; Existing scan names, now scanning through full checkpoint completion
-;; ---------------------------------------------------------------
+(defmacro recovery-result-idx (r)
+  `(g :recovery-done-index ,r))
+
+(defmacro recovery-result-meta (r)
+  `(g :recovery-meta ,r))
+
 ;; ------------------------------------------------------------------
 ;; Cut-phase scan
 ;;
@@ -737,9 +526,12 @@
 ;; checkpoint protocol to complete.
 ;; ------------------------------------------------------------------
 
-
 (defun scan-until-cut-done-aux (inputs trace idx m)
-  (declare (xargs :measure (acl2-count inputs)))
+  ;; Scan left-to-right until checkpoint completion.
+  ;; TRACE[idx] is the pre-state of INPUTS[idx].
+  ;; Returns a record with fields:
+  ;;   :cut-done-index
+  ;;   :cut-meta
   (if (or (endp inputs)
           (checkpoint-collection-complete-p m))
       (>_ :cut-done-index idx
@@ -753,23 +545,16 @@
                                m))))
 
 (defun scan-until-cut-done (inputs trace cp-start sid initiator)
-  ;; Existing name and argument order are unchanged.
+  ;; Start scanning at cp-start with freshly initialized cut meta-state.
+  ;; Returns a record with fields:
+  ;;   :cut-done-index
+  ;;   :cut-meta
   (let* ((st (nth cp-start trace))
          (m0 (make-cut-meta sid initiator st)))
     (scan-until-cut-done-aux (nthcdr cp-start inputs)
                              trace
                              cp-start
                              m0)))
-
-
-
-
-(defmacro recovery-result-idx (r)
-  `(g :recovery-done-index ,r))
-
-(defmacro recovery-result-meta (r)
-  `(g :recovery-meta ,r))
-
 
 ;; ------------------------------------------------------------------
 ;; Subsection C: Recovery metadata and recovery-side compression
@@ -1242,7 +1027,29 @@
 ;;   compressed segment input.
 ;; ------------------------------------------------------------------
 
+(defun make-nop-input (input)
+  (update input :ttype :nop))
 
+(defun spec-compatible-input (input st)
+  ;; Convert any implementation-only input into a spec no-op.
+  ;; Keep:
+  ;;   :normal
+  ;;   :receive only when the consumed msg is :normal
+  ;; Convert to :nop:
+  ;;   :start-checkpoint, :recover, :crash
+  ;;   :receive when the consumed msg is :marker or :recovery
+  (cond
+   ((equal (ttype input) :normal)
+    input)
+
+   ((equal (ttype input) :receive)
+    (let ((msg (current-msg-for-receive input st)))
+      (if (equal (msg-type msg) :normal)
+          input
+        (make-nop-input input))))
+
+   (t
+    (make-nop-input input))))
 
 (defun take-input-range-aux (inputs trace idx stop)
   ;; INPUTS is assumed to be aligned with absolute index IDX.

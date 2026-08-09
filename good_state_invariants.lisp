@@ -143,6 +143,8 @@
 ;end definitions: snapshot-entry-well-formedness
 
 
+
+
 ;start definitions: process-channel-state-well-formedness
 ;; Lift the local predicates to processes, process tables, channel rows,
 ;; full channel tables, and finally the top-level implementation state.
@@ -159,7 +161,8 @@
          (true-listp (waiting-recovery-from p))
          (subset (waiting-recovery-from p) nbrs-in)
 	 (good-snapshot-ids-list-p (snapshot-ids p) ids)
-         (good-snapshots-p (snapshot-ids p) p nbrs-in ids))))
+         (good-snapshots-p (snapshot-ids p) p nbrs-in ids)
+	 proc-snapshot-counter-good-p  )))
 
 (defun good-procs-p (ids procs all-ids)
   (if (endp ids)
@@ -241,12 +244,75 @@
       dsts
       procs))))
 
+
+(defun checkpoint-sid-p (x)
+  (and
+   (consp x)
+   (consp (cdr x))
+   (endp (cddr x))))
+
+
+(defun own-checkpoint-sids-before-counter-p
+    (i ctr sids)
+
+  (if (endp sids)
+      t
+
+    (let ((x (first sids)))
+      (and
+       (implies
+        (and
+         (checkpoint-sid-p x)
+         (equal (first x) i))
+
+        (< (second x)
+           ctr))
+
+       (own-checkpoint-sids-before-counter-p
+        i
+        ctr
+        (rest sids))))))
+
+
+(defun proc-snapshot-counter-good-p
+    (i p)
+
+  (own-checkpoint-sids-before-counter-p
+   i
+   (counter p)
+   (snapshot-ids p)))
+
+
+(defun snapshot-counters-good-for-procs-p
+    (ids procs)
+
+  (if (endp ids)
+      t
+
+    (and
+     (proc-snapshot-counter-good-p
+      (first ids)
+      (g (first ids) procs))
+
+     (snapshot-counters-good-for-procs-p
+      (rest ids)
+      procs))))
+
+
+;; (defun snapshot-counters-good-p (st)
+
+;;   (snapshot-counters-good-for-procs-p
+;;    (proc-ids st)
+;;    (procs st)))
+
+
 (defun good-state-p (st)
   (let* ((ids      (proc-ids st))
          (procs    (procs st))
          (channels (channels st)))
     (and (true-listp ids)
          (uniquep ids)
+	 (snapshot-counters-good-for-procs-p ids  procs)
          (good-procs-p ids procs ids)
 
          ;; Direction 1:

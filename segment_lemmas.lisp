@@ -1,8 +1,8 @@
 (in-package "ACL2")
 (include-book "model")
-(include-book "invariants")
-(include-book "equivalence")
-(include-book "inputs_1") 
+;; (include-book "good_state_invariants")
+;; (include-book "channel_equivalence")
+(include-book "spec_input_gen") 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Cut-scan proof support book
@@ -637,15 +637,15 @@
 ;; one cut-scan step.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun process-cut-segment (inputs st m)
-  (if (endp inputs)
-      m
-    (let* ((input (first inputs))
-           (m-next (process-cut-step input st m))
-           (st-next (system-step st input)))
-      (process-cut-segment (rest inputs)
-                           st-next
-                           m-next))))
+;; (defun process-cut-segment (inputs st m)
+;;   (if (endp inputs)
+;;       m
+;;     (let* ((input (first inputs))
+;;            (m-next (process-cut-step input st m))
+;;            (st-next (system-step st input)))
+;;       (process-cut-segment (rest inputs)
+;;                            st-next
+;;                            m-next))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -3214,6 +3214,176 @@
    (replay-inputs-for-one-proc
     i nbrs m)))
 
+(defthm replay-inputs-for-one-proc-of-cm-add-after-cut-input-sequence
+  (equal
+   (replay-inputs-for-one-proc
+    i nbrs
+    (cm-add-after-cut-input-sequence m input))
+
+   (replay-inputs-for-one-proc
+    i nbrs m)))
+
+
+(defthm
+  replay-inputs-for-one-proc-of-other-proc-after-cut-receive
+  (implies
+   (not (equal i k))
+
+   (equal
+    (replay-inputs-for-one-proc
+     i nbrs
+     (cm-after-cut-msg-append
+      (cm-after-cut-append
+       m k j input)
+      k j msg))
+
+    (replay-inputs-for-one-proc
+     i nbrs m))))
+
+
+(defthm waiting-marker-row-of-after-cut-receive-update
+  (equal
+   (g i
+      (g :waiting-marker-from
+         (cm-after-cut-msg-append
+          (cm-after-cut-append
+           m k j input)
+          k j msg)))
+
+   (g i
+      (g :waiting-marker-from m))))
+
+
+
+(defthm replay-inputs-for-one-proc-of-cm-after-cut-msg-append
+  (equal
+   (replay-inputs-for-one-proc
+    i nbrs
+    (cm-after-cut-msg-append m k l msg))
+
+   (replay-inputs-for-one-proc
+    i nbrs
+    m)))
+
+
+
+
+
+
+(defthm replay-inputs-for-one-proc-of-cm-add-before-cut-input-sequence
+  (equal
+   (replay-inputs-for-one-proc
+    i nbrs
+    (cm-add-before-cut-input-sequence m input))
+
+   (replay-inputs-for-one-proc
+    i nbrs
+    m)))
+
+(defthm replay-inputs-for-one-proc-of-cm-add-after-cut-input-sequence
+  (equal
+   (replay-inputs-for-one-proc
+    i nbrs
+    (cm-add-after-cut-input-sequence m input))
+
+   (replay-inputs-for-one-proc
+    i nbrs
+    m)))
+
+(defthm waiting-marker-from-of-cm-add-before-cut-input-sequence
+  (equal
+   (g :waiting-marker-from
+      (cm-add-before-cut-input-sequence m input))
+   (g :waiting-marker-from m)))
+
+(defthm waiting-marker-from-of-cm-add-after-cut-input-sequence
+  (equal
+   (g :waiting-marker-from
+      (cm-add-after-cut-input-sequence m input))
+   (g :waiting-marker-from m)))
+
+
+(defthm cut-not-taken-of-cm-after-cut-append
+  (equal
+   (g :cut-not-taken
+      (cm-after-cut-append m i j input))
+   (g :cut-not-taken m)))
+
+
+(defthm cut-not-taken-of-cm-after-cut-msg-append
+  (equal
+   (g :cut-not-taken
+      (cm-after-cut-msg-append m i j msg))
+   (g :cut-not-taken m)))
+
+
+(defthm
+  incoming-channels-equivalent-for-proc-p-of-closed-receive
+  (implies
+   (and
+    (incoming-channels-equivalent-for-proc-p
+     (g i waiting-marker-from)
+     i
+     (g :channels st)
+     spec-channels)
+
+    (equal
+     (g :msg-type
+        (get-msg-from-channel
+         j k (g :channels st)))
+     :normal)
+
+    ;; The received channel is closed for its receiver.
+    (not
+     (memberp j
+              (g k waiting-marker-from))))
+
+   (incoming-channels-equivalent-for-proc-p
+    (g i waiting-marker-from)
+    i
+    (g :channels
+       (step-rcv st k j))
+    spec-channels))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal k i))
+
+    :use
+    ((:instance
+      incoming-channels-equivalent-for-proc-p-of-step-rcv-normal-not-open-channel
+      (open-srcs (g i waiting-marker-from))
+      (i i)
+      (st st)
+      (k k)
+      (j j)
+      (spec-channels spec-channels))
+
+     (:instance
+      incoming-channels-equivalent-for-proc-p-of-step-rcv-normal-different-dst-left
+      (srcs (g i waiting-marker-from))
+      (dst i)
+      (st st)
+      (k k)
+      (j j)
+      (spec-channels spec-channels)))
+
+    :in-theory
+    (disable
+     incoming-channels-equivalent-for-proc-p-of-step-rcv-normal-not-open-channel
+     incoming-channels-equivalent-for-proc-p-of-step-rcv-normal-different-dst-left))))
+
+
+(defthm cut-not-taken-remove1-member-implies-different
+  (implies
+   (and
+    (not (memberp i xs))
+    (memberp k
+             (remove1-equal k xs)))
+   (not (equal k i))))
+
+
 (defthm cut-scan-open-incoming-channels-equivalent-after-cut-receive-step
   (implies
    (and
@@ -3277,6 +3447,9 @@
   :hints
   (("Subgoal 1"
     :cases ((equal (g :pid input) i)))
+   ("Subgoal 5"
+    :cases
+    ((equal (g :pid input) i)))
    ("Subgoal 2'"
     :cases ((equal (g :pid input) i)))
    ("Goal"
@@ -3290,6 +3463,9 @@
 
      (incoming-channels-equivalent-for-proc-p
       cm-after-cut-append
+      cm-after-cut-msg-append
+      cm-add-before-cut-input-sequence
+       cm-add-after-cut-input-sequence
       step-rcv
       run-spec
       replay-inputs-for-one-proc
@@ -3375,6 +3551,8 @@
      (incoming-channels-equivalent-for-proc-p
       incoming-channels-equivalent-for-proc-p-of-system-step-start-checkpoint-left
       step-checkpoint
+      cm-add-before-cut-input-sequence
+       cm-add-after-cut-input-sequence
       start-checkpoint-helper
       send-msg-all-outgoing-channels
       create-marker-message
@@ -3537,6 +3715,18 @@
       run-spec))))
 
 
+(defthm
+  cm-spec-consumed-msgs-match-for-nbrs-p-of-cm-add-after-cut-input-sequence
+  (equal
+   (cm-spec-consumed-msgs-match-for-nbrs-p
+    i nbrs
+    (cm-add-after-cut-input-sequence m input)
+    spec-start-st)
+
+   (cm-spec-consumed-msgs-match-for-nbrs-p
+    i nbrs
+    m
+    spec-start-st)))
 
 (defthm cm-spec-consumed-msgs-match-for-nbrs-p-of-process-cut-normal-receive-open
   (implies
@@ -3588,6 +3778,7 @@
     :in-theory
      (disable
       get-msg-from-channel
+      cm-add-after-cut-input-sequence
       cm-after-cut-append
       cm-after-cut-msg-append
       cm-after-cut-get
@@ -3750,7 +3941,27 @@
 
 
 
+(defthm
+  cm-spec-consumed-msgs-match-for-nbrs-p-of-s-before-cut-input-sequence
+  (equal
+   (cm-spec-consumed-msgs-match-for-nbrs-p
+    i nbrs
+    (s :before-cut-input-sequence xs m)
+    spec-start-st)
 
+   (cm-spec-consumed-msgs-match-for-nbrs-p
+    i nbrs m spec-start-st)))
+
+(defthm
+  cm-spec-consumed-msgs-match-for-nbrs-p-of-s-after-cut-input-sequence
+  (equal
+   (cm-spec-consumed-msgs-match-for-nbrs-p
+    i nbrs
+    (s :after-cut-input-sequence xs m)
+    spec-start-st)
+
+   (cm-spec-consumed-msgs-match-for-nbrs-p
+    i nbrs m spec-start-st)))
 
 
 (defthm cm-spec-consumed-msgs-match-for-nbrs-p-of-process-cut-receive
@@ -3791,6 +4002,8 @@
     :in-theory
     (disable
      cm-spec-consumed-msgs-match-for-nbrs-p
+      cm-add-before-cut-input-sequence
+      cm-add-after-cut-input-sequence
       get-msg-from-channel
       process-cut-normal-receive
       process-cut-marker-receive
@@ -4747,29 +4960,35 @@
           (g :procs st))
        st))))
 
-(defthm msgs-after-cut-of-cm-after-cut-msg-append-same
+
+(defthm cm-after-cut-msg-get-of-cm-after-cut-msg-append-same
   (equal
-   (g j
-      (g i
-         (g :msgs-after-cut
-            (cm-after-cut-msg-append m i j msg))))
+   (cm-after-cut-msg-get
+    (cm-after-cut-msg-append m i j msg)
+    i
+    j)
+
    (append
-    (g j
-       (g i
-          (g :msgs-after-cut m)))
+    (cm-after-cut-msg-get m i j)
     (list msg))))
 
-(defthm msgs-after-cut-of-cm-after-cut-msg-append-different
+
+
+(defthm cm-after-cut-msg-get-of-cm-after-cut-msg-append-different
   (implies
    (not (equal k j))
    (equal
-    (g k
-       (g i
-          (g :msgs-after-cut
-             (cm-after-cut-msg-append m i j msg))))
-    (g k
-       (g i
-          (g :msgs-after-cut m))))))
+    (cm-after-cut-msg-get
+     (cm-after-cut-msg-append m i j msg)
+     i
+     k)
+
+    (cm-after-cut-msg-get
+     m
+     i
+     k))))
+
+
 
 (defthm cm-imp-snapshot-msgs-match-for-nbrs-p-of-msg-append-and-record
   (implies
@@ -4841,6 +5060,7 @@
       ;cm-after-cut-msg-append
       )
      (cm-after-cut-msg-append
+      cm-after-cut-msg-get
       record-msg-in-snapshots)))))
 
 (defthm cm-imp-snapshot-msgs-match-for-nbrs-p-of-msg-append-after-input-append
@@ -4999,6 +5219,8 @@
      handle-normal-msg
      cm-imp-snapshot-msgs-match-for-nbrs-p-of-msg-append-after-input-append
      cm-after-cut-msg-append
+     cm-after-cut-msg-get
+     cm-add-after-cut-input-sequence
      cm-after-cut-append
      get-msg-from-channel))))
 
@@ -5115,6 +5337,23 @@
 
 
 
+(defthm
+  cm-imp-snapshot-msgs-match-for-nbrs-p-of-cm-add-after-cut-input-sequence
+
+  (equal
+   (cm-imp-snapshot-msgs-match-for-nbrs-p
+    i
+    nbrs
+    sid
+    (cm-add-after-cut-input-sequence m input)
+    st)
+
+   (cm-imp-snapshot-msgs-match-for-nbrs-p
+    i
+    nbrs
+    sid
+    m
+    st)))
 
 (defthm cm-imp-snapshot-msgs-match-for-nbrs-p-of-process-cut-step-normal-open-receive
   (implies
@@ -5148,6 +5387,7 @@
     (disable
      cm-imp-snapshot-msgs-match-for-nbrs-p
      cm-after-cut-msg-append
+     cm-add-after-cut-input-sequence
      cm-after-cut-append
      step-rcv
      handle-normal-msg
@@ -5245,7 +5485,8 @@
 
     (disable
      cm-imp-snapshot-msgs-match-for-nbrs-p
-      cm-after-cut-msg-append
+     cm-after-cut-msg-append
+     cm-add-after-cut-input-sequence
       cm-after-cut-append
       ;handle-normal-msg-core
       record-msg-in-snapshots
@@ -5325,6 +5566,7 @@
      cm-imp-snapshot-msgs-match-for-nbrs-p
       cm-after-cut-msg-append
       cm-after-cut-append
+      cm-add-after-cut-input-sequence
       ;handle-normal-msg-core
       record-msg-in-snapshots
       get-msg-from-channel))))
@@ -5541,12 +5783,37 @@
     :in-theory
     (disable
      cm-imp-snapshot-msgs-match-for-nbrs-p
+     cm-add-before-cut-input-sequence
+     cm-add-after-cut-input-sequence
       handle-first-marker-msg
       handle-non-first-marker-msg
       get-msg-from-channel))))
 
 
+(defthm
+  cm-imp-snapshot-msgs-match-for-nbrs-p-of-s-after-cut-input-sequence
 
+  (equal
+   (cm-imp-snapshot-msgs-match-for-nbrs-p
+    i nbrs sid
+    (s :after-cut-input-sequence xs m)
+    st)
+
+   (cm-imp-snapshot-msgs-match-for-nbrs-p
+    i nbrs sid m st)))
+
+
+(defthm
+  cm-imp-snapshot-msgs-match-for-nbrs-p-of-s-before-cut-input-sequence
+
+  (equal
+   (cm-imp-snapshot-msgs-match-for-nbrs-p
+    i nbrs sid
+    (s :before-cut-input-sequence xs m)
+    st)
+
+   (cm-imp-snapshot-msgs-match-for-nbrs-p
+    i nbrs sid m st)))
 
 (defthm cm-imp-snapshot-msgs-match-for-nbrs-p-of-process-cut-step-receive-non-normal-non-marker
   (implies
@@ -5588,7 +5855,9 @@
     :in-theory
     (disable
      cm-imp-snapshot-msgs-match-for-nbrs-p
-      current-msg-for-receive-rewrite
+     current-msg-for-receive-rewrite
+      cm-add-before-cut-input-sequence
+     cm-add-after-cut-input-sequence
       get-msg-from-channel
       handle-normal-msg
       handle-marker-msg
@@ -5730,6 +5999,7 @@
 
      (cm-imp-snapshot-msgs-match-for-nbrs-p
       step-normal
+      cm-add-after-cut-input-sequence
       send-compute-message)))))
 
 (defthm cm-imp-snapshot-msgs-match-for-nbrs-p-of-process-cut-step-crash
