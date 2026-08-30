@@ -8,7 +8,7 @@
 
 (include-book "model")
 
-(include-book "good_state_invariants")
+(include-book "good_state_inv")
 
 ;end setup
 
@@ -2268,3 +2268,11 @@
       map-procs-to-spec-procs))))
 
 ;end theorem: rep of good implementation state is equivalent
+
+
+
+(defthm procs-equivalent-p-reflexive
+  (procs-equivalent-p
+   ids
+   procs
+   procs))

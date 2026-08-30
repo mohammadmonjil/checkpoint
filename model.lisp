@@ -1242,63 +1242,6 @@
  
 
 
-;; (defun legal-inputp (st input)
-;;   (let* ((tp    (ttype input))
-;;          (i     (pid input))
-;;          (j     (sender input))
-;;          (ids   (proc-ids st))
-;;          (procs (procs st)))
-;;     (cond
-;;      ((equal tp :nop)
-;;       t)
-
-;;      ;; Normal computation requires a valid process id.
-;;      ((equal tp :normal)
-;;       (memberp i ids))
-
-;;      ;; A receive is legal only if:
-;;      ;;   - receiver i is a valid process,
-;;      ;;   - sender j is a valid process,
-;;      ;;   - j is an incoming neighbor of i,
-;;      ((equal tp :receive)
-;;       (and
-;;        (memberp i ids)
-;;        (memberp j ids)
-;;        (memberp j (nbrs-from (g i procs)))))
-
-;;      ;; A checkpoint can start during normal execution or during another
-;;      ;; checkpoint, but not while any process is recovering.
-;;      ((equal tp :start-checkpoint)
-;;       (and
-;;        (memberp i ids)
-;;        (not (any-process-recovering-p st))))
-
-;;      ;; A crash is illegal during checkpointing or recovery.
-;;      ((equal tp :crash)
-;;       (and
-;;        (memberp i ids)
-;;        (not (any-process-recovering-p st))
-;;        (not (any-snapshot-checkpointing-p st))))
-
-;;      ;; A recovery is illegal during checkpointing or recovery.
-;;      ;; In addition, the recovery sid must be known by every process,
-;;      ;; because recovery messages may be forwarded.
-;;      ((equal tp :recover)
-;;       (and
-;;        (memberp i ids)
-;;       (not (any-process-recovering-p st))
-;;       (not (any-snapshot-checkpointing-p st))
-;;        (all-procs-have-snapshot-id-p
-;;         (car (snapshot-ids (g i procs)))
-;;         ids
-;;         procs)
-;;        )
-;;       )
-
-;;      ;; Unknown input types are not legal.
-;;      (t
-;;       nil))))
-
 
 
 (defun legal-inputp (st input)
@@ -1474,7 +1417,14 @@
      (memberp i proc-ids)
      (memberp j proc-ids)
      (memberp i (make-nbrs-to j proc-ids)))
-    (memberp j (make-nbrs-from i proc-ids)))))
+    (memberp j (make-nbrs-from i proc-ids))))
+
+ (defthm make-nbrs-to-uniquep
+  (uniquep (make-nbrs-to i proc-ids)))
+
+(defthm make-nbrs-from-uniquep
+    (uniquep (make-nbrs-from i proc-ids)))
+)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Abstract initial local-state constructor
@@ -1720,3 +1670,150 @@
 
 
 
+(defun rep2 (imp-st)
+  (let* ((ids          (proc-ids imp-st))
+         (imp-procs    (procs imp-st))
+         (imp-channels (channels imp-st)))
+    (>_ :proc-ids ids
+        :procs
+        (map-procs-to-spec-procs ids imp-procs)
+        :channels
+        imp-channels)))
+
+
+
+
+
+;; ============================================================
+;; CHECKPOINT-CONTROL VIEW
+;;
+;; REP2 deliberately hides checkpoint protocol state.
+;;
+;; For future checkpoint-body execution, however, two pieces of
+;; implementation process state still matter:
+;;
+;;   - :COUNTER
+;;       determines the SID created by a future :START-CHECKPOINT;
+;;
+;;   - :SNAPSHOT-IDS
+;;       determines whether a received marker is a first marker
+;;       or a later marker.
+;;
+;; This function extracts exactly those fields for every process.
+;; ============================================================
+
+(defun cl-checkpoint-control-view
+    (ids procs)
+
+  (declare
+   (xargs :measure
+          (acl2-count ids)))
+
+  (if (endp ids)
+
+      nil
+
+    (let* ((i
+            (first ids))
+
+           (p
+            (g i procs)))
+
+      (cons
+       (list
+        i
+        (counter p)
+        (snapshot-ids p))
+
+       (cl-checkpoint-control-view
+        (rest ids)
+        procs)))))
+
+
+
+;; ============================================================
+;; REP3
+;;
+;; REP3 strengthens REP2 with the checkpoint-control information
+;; needed for future checkpoint execution.
+;; ============================================================
+
+(defun rep3 (st)
+
+  (list
+
+   ;; Existing projected representation.
+   (rep2 st)
+
+   ;; Checkpoint control hidden by REP2.
+   (cl-checkpoint-control-view
+    (proc-ids st)
+    (procs st))))
+
+
+;; ------------------------------------------------------------
+;; Checkpoint control state that is hidden by REP2 but can
+;; affect future checkpoint-body execution.
+;;
+;; COUNTER:
+;;   determines the SID created by :START-CHECKPOINT.
+;;
+;; SNAPSHOT-IDS:
+;;   determines whether a received marker is handled as the
+;;   first marker or a later marker.
+;; ------------------------------------------------------------
+
+(defun cl-checkpoint-control-equivalent-p
+    (ids procs-1 procs-2)
+
+  (declare
+   (xargs :measure (acl2-count ids)))
+
+  (if (endp ids)
+      t
+
+    (let* ((i  (first ids))
+           (p1 (g i procs-1))
+           (p2 (g i procs-2)))
+
+      (and
+       (equal
+        (counter p1)
+        (counter p2))
+
+       (equal
+        (snapshot-ids p1)
+        (snapshot-ids p2))
+
+       (cl-checkpoint-control-equivalent-p
+        (rest ids)
+        procs-1
+        procs-2)))))
+
+
+
+
+;; (defun
+;;   cl-state-equivalent-p
+;;   (st-1 st-2)
+
+;;   (and
+;;    (equal
+;;     (proc-ids st-1)
+;;     (proc-ids st-2))
+
+;;    (equal
+;;     (channels st-1)
+;;     (channels st-2))
+
+;;    ;; Existing pointwise visible-process relation.
+;;    (procs-equivalent-p
+;;     (proc-ids st-1)
+;;     (procs st-1)
+;;     (procs st-2))
+
+;;    ;; Existing pointwise checkpoint-control relation.
+;;    (cl-checkpoint-control-equivalent-p
+;;     (proc-ids st-1)
+;;     (procs st-1)
+;;     (procs st-2))))

@@ -1,0 +1,453 @@
+ (in-package "ACL2")
+
+;;   distributed-checkpointing.lisp
+;;   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+;; Author: Sandip Ray
+;; Date: Tue May  6 09:10:58 2025
+
+;; In this book, we formalize a version of the Chandy-Lamport distributed
+;; snapshot protocol using ACL2.  The goal is to have a formalization of
+;; correctness in a generic form applicable to *any* reasonable snapshot
+;; algorithm.  In order to be able to show that the protocol is correct using
+;; this correctness criterion we need to augment the protocol in certain ways
+;; which might be thought of as "completion" of the protocol.
+
+;; Effort Breakdown:
+
+;; - I spent two hour on May 8, creating an abstract structure for the
+;;   distribued protocol.  The key reason for the time it took was an initial
+;;   simplification I was trying to make, which was to associate incoming
+;;   channel with each process.  However, that seemed wrong eventually, since a
+;;   process as to have incoming channels corresponding to multiple processes,
+;;   which ultimately made me change the channel into a 2-D array indexed by
+;;   process indices i and j (indicating a channel from i to j).
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Section 1: Generic functions and their properties                    
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; I define memberp and subset below, merely because I hate the fact that the
+;; Lisp member function does not return a Boolean.  
+
+(defun memberp (e l)
+  (cond ((endp l) nil)
+        ((equal e (first l)) t)
+        (t (memberp e (rest l)))))
+
+
+(defun subset (x y) 
+  (cond ((endp x) t)
+        (t (and (memberp (first x) y)
+                (subset (rest x) y)))))
+
+
+(defun uniquep (x)
+  (if (endp x) t
+    (and (not (memberp (first x) (rest x)))
+         (uniquep (rest x)))))
+
+;; The function snoc adds an element at the "end" of a list.  The reason for the
+;; name should be rather obvious.
+
+(defun snoc (x e) 
+  (if (endp x) (list e)
+    (cons (first x) (snoc (rest x) e))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Section 2: Auxiliary macros and functions for access and updates
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;; I use the records book, principally so that I don't have to deal with
+;; hypothesis on "well-formedness" of the state structure.  I hate to write such
+;; hypothesis and carry along with the invariants that such structure is
+;; preserved.  In this section I also build the macros I'm going to use for
+;; access and updates to the different state components.
+
+(include-book "misc/records" :dir :system)
+
+;; The system state is given by (1) the state of all the processes, (2) the
+;; state of the stable storage corresponding to all the processes, and (3) the
+;; state of the communication channels.  For this level of formalization I don't
+;; care that much whether the channel is a message passing interface or shared
+;; memory.  I'll just call everything the channel.
+
+;; I may add more components to the state.  If I do, I will add them here.
+
+(defmacro procs     (s) `(g :procs ,s))
+(defmacro channels  (s) `(g :channels ,s))
+
+;; A process will have a local state, some outgoing channels, and some incoming
+;; channels.  I feel that when we start modeling the protocol we will need to
+;; put more stuff, like a place for its stable snapshot.  But for now, this is
+;; sufficient.  The way I am modeling channels is as a 2D array (or record).
+;; chans[i][j] (which I model as (g i (g j chans)) gives me th channel from
+;; index i to index j.
+
+(defmacro local-state        (p)      `(g :local-state ,p))
+(defmacro local-snapshot     (p)      `(g :local-snapshot ,p))
+(defmacro status             (p)      `(g :status ,p))
+(defmacro channel-snapshots  (p)      `(g :channel-snapshots ,p))
+(defmacro recording-from     (p)      `(g :recording-from ,p))
+
+;; Added by Sandip Fri May 23 09:40:36 2025: Since we do not want to combine
+;; receive and send with local computation, we augment a process with ingress
+;; and egress queues. The receive simply puts a message from a channel to the
+;; ingress queue, and send simply puts a message from egress queue to the
+;; appropriate channel.
+
+(defmacro ingress-queue      (p)      `(g :ingress-queue ,p))
+(defmacro egress-queue       (p)      `(g :egress-queue ,p))
+          
+
+(defmacro channel-state (i j chans)   `(g ,i (g ,j ,chans)))
+
+    
+;;msg type
+(defmacro msg-type (msg) '(g :msg-type ,msg))
+
+;; For a distributed system with checkpointing, the input
+;; will need to specify which transition etc.
+
+(defmacro pid   (input) `(g :pid ,input))
+(defmacro ttype (input) `(g :ttype ,input))
+(defmacro sender (input) `(g :sender ,input))
+
+;; We also need to write an "update" macro.  That will be really important in
+;; order for us to succinctly model the protocol.
+
+(defun update-macro (upds result)
+  (declare (xargs :guard (keyword-value-listp upds)))
+  (if (endp upds) result
+    (update-macro (cddr upds)
+                  (list 's (car upds) (cadr upds) result))))
+
+(defmacro update (old &rest updates)
+  (declare (xargs :guard (keyword-value-listp updates)))
+  (update-macro updates old))
+
+(defmacro >st (&rest upds) `(update st ,@upds))
+(defmacro >p  (&rest upds) `(update p  ,@upds))
+(defmacro >_  (&rest upds) `(update nil ,@upds))
+
+(defmacro >channel (i j val channels) `(s ,i (s ,j ,val ,channels) ,channels))
+
+(defmacro append-to-record-list (key val record)
+  `(let* ((existing (g ,key ,record))
+          (updated (append existing (list ,val))))
+     (s ,key updated ,record)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Section 3: Stubbed Functions and other constraints
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; I am defining the neighbors of the process of index i in
+;; procs.  I will likely need to have some conditions, like
+;; the neighbors graph is connected.  And I will add that to
+;; the constraints in the function.  The idea of the
+;; neighbors is to think about which processes I can send
+;; the message to. If some process is in the nbrs list for
+;; me then I will send a message to it, and append it to its
+;; incoming channel.  By modeling this way I avoid having
+;; the deal with outgoing and incoming channels separately. 
+
+(encapsulate
+ (((nbrs-to * *) => *)
+  ((nbrs-from * *) => *))
+ 
+  (local (defun nbrs-to (i procs) (declare (ignore i procs)) nil))
+  (local (defun nbrs-from (i procs) (declare (ignore i procs)) nil)))
+
+
+;; The following can I guess just be defined as defstub.
+;; But I did it as encapsulate, so that I can look up the
+;; arguments and see what they are.
+
+;; There are two things that a process does during normal
+;; activity.  It computes the next local state and sends
+;; messages (sometimes).  I permit a process to send
+;; messages to a subset of neighbors.  My
+;; send-compute-message function does that work.  
+
+(encapsulate
+ (((update-local-state * *) => *) ;;what arguments to put in update-local-state?
+  ((message-to-send? * *) => *)
+  ((create-compute-message * *) => *)
+  ((create-marker-message * *) => *)
+  ((create-recovery-message * *) => *))
+ 
+ (local
+  (defun update-local-state (local-state incoming-channels)
+    (declare (ignore local-state incoming-channels))
+    nil))
+
+ (local 
+  (defun message-to-send? (local-state nbr)
+    (declare (ignore local-state nbr))
+    nil))
+
+ (local
+  (defun create-compute-message (local-state nbr)
+    (declare (ignore local-state nbr))
+    nil))
+  
+  (local
+  (defun create-marker-message (local-state nbr)
+    (declare (ignore local-state nbr))
+    nil))
+     )
+
+
+;; I am now define what it means to send a message. I am
+;; calling it compute-message as opposeed to the recovery or
+;; marker messages involved in the Chandy-Lamport protocol.
+
+(defun send-compute-message (local-state i nbrs channels)
+  (cond ((endp nbrs) channels)
+        ((message-to-send? local-state (first nbrs))
+         (let*
+             ((nbr (first nbrs))
+              (channel (channel-state i nbr channels))
+              (msg (create-compute-message local-state nbr))
+              (channel (snoc channel msg))
+              (channels (>channel i nbr channel channels)))
+           channels))
+        (t (send-compute-message local-state i (rest nbrs) channels))))
+
+
+(defun send-marker-message (local-state i nbrs channels)
+  (cond ((endp nbrs) channels)
+        ( t
+         (let*
+             ((nbr (first nbrs))
+              (channels (send-marker-message local-state i (rest nbrs) channels))
+              (channel (channel-state i nbr channels))
+              (msg (create-marker-message local-state nbr))
+              (channel (snoc channel msg))
+              (channels (>channel i nbr channel channels)))
+           channels)))))
+
+;; Also, I need to receive messages and remove them from the
+;; channels.
+
+(defun find-incoming-channels (i nbrs channels)
+  (if (endp nbrs)
+      nil
+    (cons (channel-state i (first nbrs) channels)
+          (find-incoming-channels i (rest nbrs) channels))))
+
+;; (defun remove-message-from-incoming-channels (i nbrs channels)
+;;   (if (endp nbrs)
+;;       channels
+;;     (let* ((nbr (first nbrs))
+;;            (channel (channel-state nbr i channels))
+;;            (channel (if channel (cdr channel) nil))
+;;            (channels (>channel nbr i  channel channels)))
+;;       (remove-message-from-incoming-channels i (rest nbrs) channels))))
+
+;; Get the first msg from a incoming channel
+(defun get-msg-from-channel (i nbr channels)
+  (let* ((channel (channel-state nbr i channels))
+         (channel (if channel (cdr channel) nil)))
+    (first channel))))
+
+;; Remove the first msg from a incoming channel
+(defun remove-message-from-incoming-channel (i nbr channels)
+    (let* ((channel (channel-state nbr i channels))
+           (channel (if channel (cdr channel) nil))
+           (channels (>channel nbr i  channel channels)))
+      (channels)))
+
+;; record-msg-from incoming-channel and return channel-snapshots
+(defun record-msg-from-incoming-channel (i j channel-snapshots channels)
+(let* ((channel (channel-state j i channels))
+       (msg (first channel))
+       (channel-snapshots (append-to-record-list j msg channel-snapshots))) 
+  channel-snapshots))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Section 4: Transition function
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; For defining a transition of distributed system, i is the
+;; index of the process that takes a step.
+;; if checkpoint started, we need to record the messages
+
+
+
+;; helper functions for step-rcv. Normal and marker msgs need to be handled
+;; differently. Based on the process status (normal/checkpointing) different
+;; things needed to be done
+
+;; Added by Sandip Mon May 19 12:12:44 2025: I think it's
+;; easier for a process to have a buffer for messages it
+;; receives and remove it from the channel.  That way we do
+;; not 
+
+
+(defun handle-normal-msg (p i j msg)
+  (let* ((msg-type (msg-type msg)))
+    (case :ms
+    (:normal-op (
+
+
+    ;; msg received after checkpointing, so save the msg in the channel snapshot's jth entry 
+    ;; and do normal business
+    (:checkpointing
+     (let* ((procs (procs st))
+            (channels (channels st))
+            (p (g i procs))
+	    (channel-snapshots (channel-snapshots p))
+	    (recording-from (recording-from p))
+	    (channel-snapshots
+	     (if (memberp j recording-from)
+		 (record-msg-from-incoming-channel
+		  i j channel-snapshots channels)
+		 channel-snapshots))
+            (channels (remove-message-from-incoming-channel i j channels))
+	    (p (>p :channel-snapshots channel-snapshots))
+	    ;; update local-state?
+            (procs (s i p procs))
+            (st (>st :procs procs
+                     :channels channels)))
+       st))))
+
+(defun handle-marker-msg (st i j msg status)
+  (case status
+    ;;first marker received, record snapshot and initiate channel-recording for
+    ;;all incoming channel except j  and send marker along all the outgoing channels
+    (:normal-op
+     (let* ((procs (procs st))
+            (channels (channels st))
+            (p (g i procs))
+	    (nbrs-from (nbrs-from i procs))
+	    (nbrs-to (nbrs-to i procs))
+	    (local (local-state p))
+	    ;;remove marker messge from channel to i from j
+	    (channels (remove-message-from-incoming-channel i j channels))
+	    ;; record current state as the snapshot
+	    (p (>p :local-snapshot local-state))
+            ;; list to track which channels are being recorded
+	    (recording-from (remove j nbrs-from))
+            ;; channel state of j to i is empty
+            (channel-snapshots (channel-snapshots p))
+	    (channel-snapshots (append-to-record-list j nil channel-snapshots))
+            ;; send marker msg along all outgoing channels
+	    (channels (send-marker-msg local i nbrs-to channels)) 
+	    (p (>p :status "checkpointing"
+		   :recording-from recording-from
+		   :channel-snapshots channel-snapshots))
+	    (procs (s i p procs))
+	    (st (>st :procs procs
+		     :channels channels)))
+       st))
+
+    (:checkpointing
+     ;;marker received after checkpointing, so stop recording for channel j to i
+     (let* 
+	 ((procs (procs st))
+          (channels (channels st))
+          (p (g i procs))
+	  (recording-from (remove j (recording-from p)))
+	  (channels (remove-message-from-incoming-channel i j channels))
+	  (p (>p :recording-from recording-from))
+	  (procs (s i p procs))
+	  (st (>st :procs procs
+		   :channels channels)))
+       st))))
+
+(defun step-rcv (st i j)
+  (let* ((procs (procs st))
+         (channels (channels st))
+         (p (g i procs))
+	 (status (status p))
+	 (msg (get-msg-from-channel i j channels))
+	 (msg-type (msg-type msg))
+	 (case msg-type
+	   (:normal (let st (handle-normal-msg st i j msg status)))
+	   (:marker (let st (handle-marker-msg st i j msg status)))))
+    st))	 
+
+
+;; Receiving a message for process of index i from channel with process of index
+;; j.
+
+(defun step-recv-message (st i j)
+  (let* ((procs (procs st))
+         (p (g i procs))
+         (channels (channels st))
+         (chan (channel i j channels))
+         (msg-recvd? (if channel t nil))
+         (msg (if channel (car chan) nil))
+         (ingress-queue (ingress-queue p))
+         (ingress-queue (if msg-recvd?
+                            (snoc msg ingress-queue)
+                          ingress-queue))
+         (chan (if msg-recvd? (cdr chan) chan))
+         (p (>p :ingress-queue ingress-queue))
+         (channels (>channel i j chan channels))
+         (procs (s i p procs)))
+    (>st :procs procs
+         :channels channels)))
+
+(defun step-send-message (st i)
+  (let* ((procs (procs st))
+         (p (g i procs))
+         (channels (channels st))
+         (egress-queue (egress-queue p)))
+    (if (not egress-queue) st
+      (let* ((msg (car egress-queue))
+             (nbr (msg-nbr msg))
+             (msg-content (msg-content msg))
+             (egress-queue (cdr egress-queue))
+             (chan (channel i msg-nbr channels))
+             (chan (snoc msg-content chan))
+             (channels (>channel i nbr chan channels))
+             (p (>p :egress-queue egress-queue))
+             (procs (s i p procs)))
+        (>st :procs procs
+             :channels channels)))))
+
+(defun step-compute (st i)
+  
+        
+
+
+(defun step-start-checkpoint (st i)
+  (let* ((procs (procs st))
+         (channels (channels st))
+         (p (g i procs))
+         (nbrs-to (nbrs-to i procs))
+         (recording-from (nbrs-from i procs)) ;;start recording on all incoming channels
+         (local-state (local-state p))
+	 (p (>p :local-snapshot local-state
+		:status "checkpointing"
+		:recording-from recording-from)) 
+         (channels (send-marker-message local-state i nbrs-to channels))
+         (procs (s i p procs))
+         (st (>st :procs procs
+                  :channels channels)))
+    st))
+
+
+;; This is just a placeholder for what you need to do.
+(defstub complete-this () => *)
+
+(defun checkpointing-distributed-system-step (st input)
+  (let* ((i (pid input))
+	 (j (sender input))
+         (ttype (ttype input)))
+    (case ttype
+      (:receive (step-rcv st i j))
+      (:normal (step-snd st i))
+      (:start-checkpoint (step-start-checkpoint st i))
+      (:crash (complete-this))
+      (:recover (complete-this))
+      (t st))))
+         
+            
+           
