@@ -1,0 +1,9083 @@
+(in-package "ACL2")
+
+(include-book "model")
+(include-book "scan")
+(include-book "good_state_invariants")
+(include-book "channel_equivalence")
+(include-book "basic")
+(include-book "cfinvariants")
+(include-book "rec")
+(include-book "cut_inv")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Proof roadmap
+;;
+;; The book establishes checkpoint-segment reordering in four layers:
+;;
+;;   1. Segment wrappers expose one unified cut scan and its before/after
+;;      classification without duplicating scanner logic.
+;;   2. A local post-cut/pre-cut predicate is shown to imply a semantic
+;;      two-input swappability contract.
+;;   3. Independent adjacent inputs are proved to commute componentwise:
+;;      application-visible process state, concrete channels, and the
+;;      checkpoint-control projection.
+;;   4. The component results are assembled into STATE-EQUIVALENT-P, and
+;;      a separate preservation library shows that subsequent checkpoint-body
+;;      steps respect that equivalence.
+;;
+;; Comments distinguish exact equality from observational equivalence.  Exact
+;; equality is used for PROC-IDS and CHANNELS; process protocol bookkeeping is
+;; compared only through the fields its corresponding relation observes.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Complete isolated checkpoint segment using the unified cut scan
+;;
+;; A valid segment:
+;;   1. is nonempty;
+;;   2. starts with :start-checkpoint;
+;;   3. has no later recovery, crash, or unknown input;
+;;   4. starts outside an active  recovery;
+;;   5. is legal from the supplied implementation state;
+;;   6. does not consume a recovery message through a generic receive;
+;;   7. first reaches full checkpoint completion after its final input.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; ------------------------------------------------------------------
+;; Segment identity and metadata
+;; ------------------------------------------------------------------
+
+(defun checkpoint-segment-initiator (input-seg)
+  (pid (first input-seg)))
+
+(defun checkpoint-segment-sid (st input-seg)
+  (let* ((i (checkpoint-segment-initiator input-seg))
+         (p (g i (procs st))))
+    (list i (counter p))))
+
+(defun checkpoint-segment-initial-meta (st input-seg)
+  (make-cut-meta
+   (checkpoint-segment-sid st input-seg)
+   (checkpoint-segment-initiator input-seg)
+   st))
+
+(defun checkpoint-segment-meta (st input-seg)
+  (scan-until-checkpoint-done
+   input-seg
+   st
+   (checkpoint-segment-initial-meta st input-seg)))
+
+(defun checkpoint-segment-completep (st input-seg)
+  (checkpoint-collection-complete-p
+   (checkpoint-segment-meta st input-seg)))
+
+(defun checkpoint-segment-end-state (st input-seg)
+  (run-imp st input-seg))
+
+;; ------------------------------------------------------------------
+;; Completion occurs exactly at the segment boundary
+;; ------------------------------------------------------------------
+
+(defun checkpoint-completes-at-segment-end-p (inputs st m)
+  (declare (xargs :measure (acl2-count inputs)))
+  (if (endp inputs)
+      (checkpoint-collection-complete-p m)
+    (and
+     (not (checkpoint-collection-complete-p m))
+     (let* ((input   (first inputs))
+            (next-m  (process-cut-step input st m))
+            (next-st (system-step st input)))
+       (checkpoint-completes-at-segment-end-p
+        (rest inputs) next-st next-m)))))
+
+;; ------------------------------------------------------------------
+;; Recorded before/after partition
+;; ------------------------------------------------------------------
+
+(defun checkpoint-segment-before-cut-inputs (st input-seg)
+  (cm-before-cut-input-sequence
+   (checkpoint-segment-meta st input-seg)))
+
+(defun checkpoint-segment-after-cut-inputs (st input-seg)
+  (cm-after-cut-input-sequence
+   (checkpoint-segment-meta st input-seg)))
+
+(defun checkpoint-segment-reordered-inputs (st input-seg)
+  (append
+   (checkpoint-segment-before-cut-inputs st input-seg)
+   (checkpoint-segment-after-cut-inputs st input-seg)))
+
+;; ------------------------------------------------------------------
+;; Complete checkpoint segment
+;; ------------------------------------------------------------------
+
+(defun checkpoint-complete-segment-p (st input-seg)
+  (and
+   (consp input-seg)
+   (equal (ttype (first input-seg)) :start-checkpoint)
+   (cl-checkpoint-body-inputs-p (rest input-seg))
+   (good-state-p st)
+   (legal-input-sequencep st input-seg)
+   (recovery-free-state-p st)
+   (checkpoint-segment-completep st input-seg)
+   (checkpoint-completes-at-segment-end-p
+    input-seg
+    st
+    (checkpoint-segment-initial-meta st input-seg))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Local two-input independence contract
+;;
+;; Global reordering is reduced to adjacent transpositions.  The predicate
+;; below states exactly when one such transposition is semantically safe:
+;; the inputs belong to different processes, both orders are legal, and
+;; neither order enters the recovery semantics.  Subsequent commutation
+;; theorems consume this common contract for processes, channels, and
+;; checkpoint-control state.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defun two-imp-inputs-swappable-p
+    (st input-1 input-2)
+  (let* ((st-1 (system-step st input-1))
+         (st-2 (system-step st input-2)))
+    (and
+     ;; Preserve each process's local input order.
+     (not
+      (equal
+       (pid input-1)
+       (pid input-2)))
+     ;; Both inputs are valid checkpoint-segment body inputs.
+     ;; This includes checkpoint starts for other SIDs.
+     (cl-checkpoint-body-input-p input-1)
+     (cl-checkpoint-body-input-p input-2)
+     ;; Both execution orders are legal.
+     (legal-inputp st input-1)
+     (legal-inputp st-1 input-2)
+     (legal-inputp st input-2)
+     (legal-inputp st-2 input-1)
+     ;; Neither execution order performs recovery activity.
+     (no-recovery-step-p input-1 st)
+     (no-recovery-step-p input-2 st-1)
+     (no-recovery-step-p input-2 st)
+     (no-recovery-step-p input-1 st-2))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Channel algebra for independent implementation steps
+;;
+;; Channels are stored as a nested receiver/sender record.  The lemmas in
+;; this section expose the small algebraic facts needed by the case split on
+;; two input types.  They are intentionally stated below SYSTEM-STEP so the
+;; main commutation proofs do not repeatedly expand the entire transition
+;; relation.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Updates to rows belonging to distinct senders commute, even when their
+;; destination keys happen to be equal.
+(defthm channel-updates-different-senders-commute
+  (implies
+   (not (equal i1 i2))
+   (equal
+    (>channel
+     i2 dst2 val2
+     (>channel
+      i1 dst1 val1
+      channels))
+    (>channel
+     i1 dst1 val1
+     (>channel
+      i2 dst2 val2
+      channels))))
+  :hints
+  (("Goal"
+    :cases
+    ((equal dst1 dst2)))))
+
+;; A compute-message send from I2 cannot disturb a separately installed
+;; channel value whose sender is I1.  This one-sided transport rule is used
+;; to normalize nested channel updates before applying commutativity.
+(defthm send-compute-message-preserves-other-sender-update
+  (implies
+   (not (equal i1 i2))
+   (equal
+    (send-compute-message
+     local2
+     i2
+     nbrs2
+     (s dst
+        (s i1 val
+           (g dst channels))
+        channels))
+    (s dst
+       (s i1 val
+          (g dst
+             (send-compute-message
+              local2
+              i2
+              nbrs2
+              channels)))
+       (send-compute-message
+        local2
+        i2
+        nbrs2
+        channels)))))
+
+;; Two normal compute sends from different processes may be exchanged
+;; without changing the concrete channel table.
+(defthm send-compute-message-different-senders-commute
+  (implies
+   (not (equal i1 i2))
+   (equal
+    (send-compute-message
+     local2
+     i2
+     nbrs2
+     (send-compute-message
+      local1
+      i1
+      nbrs1
+      channels))
+    (send-compute-message
+     local1
+     i1
+     nbrs1
+     (send-compute-message
+      local2
+      i2
+      nbrs2
+      channels)))))
+
+;; Normal application execution changes process and channel contents but not
+;; the universe or order of process identifiers.
+(defthm proc-ids-of-step-normal
+  (equal
+   (proc-ids
+   (step-normal st i))
+   (proc-ids st)))
+
+;; Starting a checkpoint at I2 commutes with replacing the distinct process
+;; slot I1.  This isolates the process-table part of mixed normal/start cases.
+(defthm start-checkpoint-helper-commutes-with-other-proc-update
+  (implies
+   (not (equal i1 i2))
+   (equal
+    (start-checkpoint-helper
+     (s i1 p1 procs)
+     i2)
+    (s i1
+       p1
+       (start-checkpoint-helper
+        procs
+        i2)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Projection lemmas for marker traffic
+;;
+;; The concrete implementation carries checkpoint markers in its channels,
+;; whereas the specification projection retains only application messages.
+;; The following lifting chain proves marker invisibility at the channel,
+;; row, and whole-table levels, then combines it with a normal compute send.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Projecting one concrete channel erases a marker appended by broadcast.
+(defthm project-channel-msgs-marker-send-invisible
+  (implies
+   (equal (msg-type msg) :marker)
+   (equal
+    (project-channel-msgs-to-spec
+     (channel-state
+      src
+      dst
+      (send-msg-all-outgoing-channels
+       msg i nbrs channels)))
+    (project-channel-msgs-to-spec
+     (channel-state
+      src
+      dst
+     channels)))))
+
+;; Lift marker invisibility from one channel to one destination row.
+(defthm project-channel-row-marker-send-invisible
+  (implies
+   (equal (msg-type msg) :marker)
+   (equal
+    (project-channel-row-to-spec
+     srcs
+     dst
+     (send-msg-all-outgoing-channels
+      msg i nbrs channels))
+    (project-channel-row-to-spec
+     srcs
+     dst
+     channels))))
+
+;; Lift marker invisibility once more to the complete projected channel map.
+(defthm project-channels-marker-send-invisible
+  (implies
+   (equal (msg-type msg) :marker)
+   (equal
+    (project-channels-to-spec-aux
+     dsts
+     srcs
+     (send-msg-all-outgoing-channels
+      msg i nbrs channels))
+    (project-channels-to-spec-aux
+     dsts
+     srcs
+     channels))))
+
+;; A broadcast sent by I2 leaves every channel whose sender is I1 unchanged.
+(defthm channel-state-of-send-msg-all-other-sender
+  (implies
+   (not (equal i1 i2))
+   (equal
+    (channel-state
+     i1
+     dst
+     (send-msg-all-outgoing-channels
+      msg i2 nbrs2 channels))
+    (channel-state
+     i1
+     dst
+     channels))))
+
+;; Consequently, a broadcast by I2 commutes with an explicit update to an
+;; I1-originating channel when I1 and I2 are distinct.
+(defthm send-msg-all-outgoing-commutes-with-other-sender-update
+  (implies
+   (not (equal i1 i2))
+   (equal
+    (send-msg-all-outgoing-channels
+     msg
+     i2
+     nbrs2
+     (>channel i1 dst val channels))
+    (>channel
+     i1
+     dst
+     val
+     (send-msg-all-outgoing-channels
+      msg
+      i2
+      nbrs2
+      channels)))))
+
+;; A normal send from I1 followed by a marker broadcast from I2 has the same
+;; projected destination row as the normal send alone.
+(defthm project-channel-row-send-compute-marker-invisible
+  (implies
+   (and
+    (not (equal i1 i2))
+    (equal (msg-type msg) :marker))
+   (equal
+    (project-channel-row-to-spec
+     srcs dst
+     (send-compute-message
+      local i1 nbrs1
+      (send-msg-all-outgoing-channels
+       msg i2 nbrs2 channels)))
+    (project-channel-row-to-spec
+     srcs dst
+     (send-compute-message
+      local i1 nbrs1 channels)))))
+
+;; Whole-table version of the preceding row lemma.  Keeping this as a named
+;; lifting fact prevents recursive projection definitions from leaking into
+;; the mixed normal/start commutation proof.
+(defthm project-send-compute-marker-invisible
+ (implies
+    (and
+    (not (equal i1 i2))
+    (equal (msg-type msg) :marker))
+   (equal
+    (project-channels-to-spec-aux
+     dsts
+     srcs
+     (send-compute-message
+      local
+      i1
+      nbrs1
+      (send-msg-all-outgoing-channels
+       msg i2 nbrs2 channels)))
+    (project-channels-to-spec-aux
+     dsts
+     srcs
+     (send-compute-message
+      local
+      i1
+      nbrs1
+      channels))))
+  :hints (("Goal"
+	   :in-theory (disable send-msg-all-outgoing-channels
+			       send-compute-message))))
+
+;; At the specification-channel level, a normal send and a marker broadcast
+;; by different processes commute.  Projection is essential here because
+;; marker traffic is intentionally absent from the specification.
+(defthm project-channels-normal-send-marker-send-commute
+  (implies
+   (and
+    (not (equal i1 i2))
+    (equal (msg-type msg) :marker))
+   (equal
+    ;; Normal send from I1 first, then marker sends from I2.
+    (project-channels-to-spec-aux
+     ids
+     ids
+     (send-msg-all-outgoing-channels
+      msg
+      i2
+      nbrs2
+      (send-compute-message
+       local1
+       i1
+       nbrs1
+       channels)))
+    ;; Marker sends from I2 first, then normal send from I1.
+    (project-channels-to-spec-aux
+     ids
+     ids
+     (send-compute-message
+      local1
+      i1
+      nbrs1
+      (send-msg-all-outgoing-channels
+       msg
+       i2
+       nbrs2
+       channels))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; FIFO-head and receive-removal facts
+;;
+;; Sends append to a FIFO while receives remove its head.  These lemmas make
+;; the append/remove reasoning explicit, including the nonempty side
+;; conditions that ensure an append cannot change the message consumed by a
+;; legal receive.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Appending an element to a nonempty list preserves its existing head.
+(defthm car-of-snoc-when-consp
+  (implies
+   (consp x)
+   (equal
+    (car (snoc x e))
+    (car x))))
+
+;; Hence a compute send cannot change the message currently available on a
+;; nonempty channel, whether or not that channel is one of the send targets.
+(defthm get-msg-from-channel-of-send-compute-message-when-consp
+  (implies
+   (consp
+    (channel-state src dst channels))
+   (equal
+    (get-msg-from-channel
+     src
+     dst
+     (send-compute-message
+      local i nbrs channels))
+    (get-msg-from-channel
+     src
+     dst
+     channels))))
+
+;; Removing the old head and appending compute traffic commute on a nonempty
+;; channel.  This is the concrete channel equality needed for normal/receive.
+(defthm remove-message-from-channel-of-send-compute-message
+  (implies
+   (consp
+    (channel-state sender receiver channels))
+   (equal
+    (remove-message-from-channel
+     sender
+     receiver
+     (send-compute-message
+      local
+      normal-i
+      nbrs
+      channels))
+    (send-compute-message
+     local
+     normal-i
+     nbrs
+     (remove-message-from-channel
+      sender
+      receiver
+      channels)))))
+
+;; Broadcasting can only append; it cannot make an existing channel empty.
+(defthm channel-consp-after-send-msg-all-outgoing
+  (implies
+   (consp (channel-state src dst channels))
+   (consp
+    (channel-state
+     src
+     dst
+     (send-msg-all-outgoing-channels
+      msg i nbrs channels)))))
+
+;; A marker or recovery broadcast also preserves the head of every channel
+;; that was already nonempty.
+(defthm get-msg-from-channel-of-send-msg-all-outgoing-when-consp
+  (implies
+   (consp
+    (channel-state
+     src
+     dst
+     channels))
+   (equal
+    (get-msg-from-channel
+     src
+     dst
+     (send-msg-all-outgoing-channels
+      msg
+      i
+      nbrs
+      channels))
+    (get-msg-from-channel
+     src
+     dst
+     channels))))
+
+;; Boolean/non-NIL form of nonemptiness preservation, useful after ACL2 has
+;; simplified a CONSP fact into a truth test on CHANNEL-STATE.
+(defthm channel-nonempty-after-send-msg-all-outgoing
+  (implies
+   (consp
+    (channel-state src dst channels))
+   (channel-state
+    src
+    dst
+    (send-msg-all-outgoing-channels
+     msg i nbrs channels))))
+
+;; Receiving at destination DST commutes with a broadcast originating from a
+;; different process I, provided the received channel already has a head.
+(defthm remove-message-from-channel-of-send-msg-all-outgoing-when-consp
+    (implies
+     (and
+      (not (equal dst i))
+      (consp (channel-state src dst channels)))
+   (equal
+    (remove-message-from-channel
+     src
+     dst
+     (send-msg-all-outgoing-channels
+      msg i nbrs channels))
+    (send-msg-all-outgoing-channels
+     msg
+     i
+     nbrs
+     (remove-message-from-channel
+      src dst channels)))))
+
+;; A receive removal at DST1 cannot affect the head observed at DST2.
+(defthm get-msg-from-channel-of-remove-message-different-dst
+  (implies
+   (not (equal dst1 dst2))
+   (equal
+    (get-msg-from-channel
+     src2
+     dst2
+     (remove-message-from-channel
+      src1
+      dst1
+      channels))
+    (get-msg-from-channel
+     src2
+     dst2
+     channels))))
+
+;; Two receives addressed to distinct processes modify distinct destination
+;; rows and therefore commute exactly.
+(defthm remove-message-from-channel-different-dsts-commute
+  (implies
+   (not (equal dst1 dst2))
+   (equal
+    (remove-message-from-channel
+     src1
+     dst1
+     (remove-message-from-channel
+      src2
+      dst2
+      channels))
+    (remove-message-from-channel
+     src2
+     dst2
+     (remove-message-from-channel
+      src1
+      dst1
+      channels)))))
+
+;; The process-table helper used by two independent checkpoint starts is
+;; itself commutative at distinct process identifiers.
+(defthm start-checkpoint-helper-different-pids-commute
+  (implies
+   (not (equal i1 i2))
+   (equal
+    (start-checkpoint-helper
+     (start-checkpoint-helper procs i1)
+     i2)
+    (start-checkpoint-helper
+     (start-checkpoint-helper procs i2)
+     i1))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; State equivalence used by the implementation reordering proof
+;;
+;; Two implementation states are equivalent when they have:
+;;   1. the same process identifiers;
+;;   2. exactly the same channel state;
+;;   3. pointwise equality of application-visible process fields; and
+;;   4. pointwise equality of checkpoint-control fields.
+;;
+;; PROCS-EQUIVALENT-P observes LOCAL-STATE, NBRS-TO, and NBRS-FROM.
+;; CL-CHECKPOINT-CONTROL-EQUIVALENT-P observes COUNTER and SNAPSHOT-IDS.
+;; The remaining implementation bookkeeping may differ.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun state-equivalent-p (st-1 st-2)
+  (and
+   (equal
+    (proc-ids st-1)
+    (proc-ids st-2))
+   (equal
+    (channels st-1)
+    (channels st-2))
+   ;; Existing pointwise visible-process relation.
+   (procs-equivalent-p
+    (proc-ids st-1)
+    (procs st-1)
+    (procs st-2))
+   ;; Existing pointwise checkpoint-control relation.
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st-1)
+   (procs st-1)
+   (procs st-2))))
+
+;; Process-side adjacent-swap theorem.  SYSTEM-STEP has sixteen possible
+;; body-input type pairs; the case split reduces each to the channel/update
+;; algebra above.  Literal process records need not agree because snapshots
+;; and protocol bookkeeping may be recorded in different orders.  The
+;; application-visible fields observed by PROCS-EQUIVALENT-P do agree.
+(defthm two-imp-inputs-commute-under-procs-equivalence
+  (implies
+   (two-imp-inputs-swappable-p
+    st
+    input-1
+    input-2)
+   (procs-equivalent-p
+    (proc-ids st)
+    ;; INPUT-1 followed by INPUT-2.
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    ;; INPUT-2 followed by INPUT-1.
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+ ; :otf-flg t
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     get-msg-from-channel
+     remove-message-from-channel
+     start-checkpoint-helper
+     create-marker-message
+     update-proc-for-normal-msg-core)
+    :cases
+    ((equal (ttype input-1) :nop)
+     (equal (ttype input-1) :normal)
+     (equal (ttype input-1) :receive)
+     (equal (ttype input-1) :start-checkpoint)
+     (equal (ttype input-2) :nop)
+     (equal (ttype input-2) :normal)
+     (equal (ttype input-2) :receive)
+     (equal (ttype input-2) :start-checkpoint)))))
+
+;; ------------------------------------------------------------
+;; PROCESS-CUT-STEP cannot make a process become pre-cut.
+;;
+;; If I is still in :cut-not-taken after the metadata step,
+;; then I must already have been in :cut-not-taken before it.
+;;
+;; Equivalently, once a process has taken the target cut,
+;; later PROCESS-CUT-STEP calls never put it back into the
+;; pre-cut set.
+;; ------------------------------------------------------------
+
+(defthm cm-cut-not-taken-p-after-process-cut-step-implies-before
+  (implies
+   (cm-cut-not-taken-p
+    (process-cut-step
+     input
+     st
+     m)
+    i)
+   (cm-cut-not-taken-p
+    m
+    i)))
+
+;; Executing a NOP leaves the state unchanged, so it cannot alter whether the
+;; next input is legal.  The biconditional form rewrites legality in either
+;; direction during adjacent-swap proofs.
+(defthm legal-inputp-after-nop-step-iff
+  (implies
+   (equal
+    (ttype input-i)
+    :nop)
+   (equal
+    (legal-inputp
+     (system-step st input-i)
+     input-j)
+    (legal-inputp
+     st
+     input-j))))
+
+;; NOP itself is always an admissible implementation input.
+(defthm legal-inputp-when-nop
+  (implies
+   (equal
+    (ttype input)
+    :nop)
+   (legal-inputp
+    st
+    input)))
+
+;; ------------------------------------------------------------
+;; SYSTEM-STEP does not change the set of process IDs.
+;;
+;; Individual implementation steps may change process state,
+;; channels, snapshots, etc., but they do not add or remove
+;; processes from the distributed system.
+;; ------------------------------------------------------------
+
+(defthm legal-normal-input-after-step-implies-before
+  (implies
+   (and
+    (equal
+     (ttype input-j)
+     :normal)
+    (legal-inputp
+     (system-step st input-i)
+     input-j))
+   (legal-inputp
+    st
+    input-j)))
+
+;; ------------------------------------------------------------
+;; A NORMAL input does not change the set of processes that
+;; have not yet taken the cut.
+;;
+;; PROCESS-CUT-NORMAL may record the input in metadata, and
+;; PROCESS-CUT-STEP may add it to the global before/after-cut
+;; sequence, but none of those updates modify :CUT-NOT-TAKEN.
+;; ------------------------------------------------------------
+
+(defthm cm-cut-not-taken-p-of-process-cut-step-when-normal
+  (implies
+   (equal
+    (ttype input)
+    :normal)
+   (equal
+    (cm-cut-not-taken-p
+     (process-cut-step
+      input
+      st
+      m)
+     i)
+    (cm-cut-not-taken-p
+     m
+     i))))
+
+;; ------------------------------------------------------------
+;; If INPUT-I is a NORMAL step, it only sends messages from
+;;
+;;     PID(INPUT-I)
+;;
+;; Therefore a channel whose source is some different process
+;; SRC is unchanged by INPUT-I.
+;;
+;; This is exactly the easy branch needed later when
+;;
+;;     SENDER(INPUT-J) != PID(INPUT-I).
+;; ------------------------------------------------------------
+
+(defthm channel-state-after-normal-step-when-src-different
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :normal)
+    (not
+     (equal
+      src
+      (pid input))))
+   (equal
+    (channel-state
+     src
+     dst
+     (channels
+      (system-step st input)))
+    (channel-state
+     src
+     dst
+     (channels st)))))
+
+;; ------------------------------------------------------------
+;; If SRC has already taken the cut and DST has not,
+;; and SRC is an incoming neighbor of DST, then the
+;; SRC -> DST channel is already nonempty.
+;;
+;; GOOD-STATE-P converts
+;;
+;;   SRC in NBRS-FROM(DST)
+;;
+;; into
+;;
+;;   DST in NBRS-TO(SRC).
+;;
+;; Then CUT-MARKERS-IN-TRANSIT-P says the checkpoint marker
+;; is already somewhere in SRC -> DST, so the channel is CONSP.
+;; ------------------------------------------------------------
+
+;; ------------------------------------------------------------
+;; Convert the incoming-neighbor view into the outgoing-neighbor
+;; view.
+;;
+;; If SRC is an incoming neighbor of DST, then under GOOD-STATE-P
+;; the topology consistency invariant says that DST is an outgoing
+;; neighbor of SRC.
+;;
+;; This is the exact orientation needed by the
+;; CUT-MARKERS-IN-TRANSIT invariant.
+;; ------------------------------------------------------------
+
+(defthm nbrs-from-src-dst-implies-nbrs-to-src-dst
+  (implies
+   (and
+    (good-state-p st)
+    (memberp src
+             (proc-ids st))
+    (memberp dst
+             (proc-ids st))
+    (memberp
+     src
+     (nbrs-from
+      (g dst
+         (procs st)))))
+   (memberp
+    dst
+    (nbrs-to
+     (g src
+        (procs st))))))
+
+;; Convert topology plus the marker-in-transit invariant into the concrete
+;; FIFO fact required by receive commutation: the channel from an already
+;; post-cut sender to a still-pre-cut receiver has a message at its head.
+(defthm cut-markers-in-transit-p-implies-channel-consp-from-nbrs-from
+  (implies
+   (and
+    (cut-markers-in-transit-p
+     m
+     st)
+    (good-state-p st)
+    (memberp src
+             (proc-ids st))
+    (memberp dst
+             (proc-ids st))
+    (memberp
+     src
+     (nbrs-from
+      (g dst
+         (procs st))))
+    (not
+     (cm-cut-not-taken-p
+      m
+      src))
+    (cm-cut-not-taken-p
+     m
+     dst))
+   (consp
+    (channel-state
+     src
+     dst
+     (channels st))))
+  :hints
+  (("Goal"
+    :in-theory (disable cut-markers-in-transit-p
+			good-state-p
+			cm-cut-not-taken)))
+    :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+;; ------------------------------------------------------------
+;; INPUT-I is already post-cut.
+;;
+;; INPUT-J is still pre-cut after processing INPUT-I.
+;;
+;; Since PROCESS-CUT-STEP never puts a process back into
+;; :CUT-NOT-TAKEN, INPUT-J was also pre-cut before INPUT-I.
+;;
+;; Therefore INPUT-I and INPUT-J cannot belong to the same
+;; process: one is post-cut and the other is pre-cut.
+;; ------------------------------------------------------------
+
+(defthm post-pre-after-process-cut-step-implies-different-pids
+  (implies
+   (and
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-i)))
+    (cm-cut-not-taken-p
+     (process-cut-step
+      input-i
+      st
+      m)
+     (pid input-j)))
+   (not
+    (equal
+     (pid input-i)
+     (pid input-j)))))
+
+;; ------------------------------------------------------------
+;; A RECEIVE by process I can affect channels in two ways:
+;;
+;;   1. it removes a message from SENDER(INPUT) -> I;
+;;
+;;   2. for certain received protocol messages, I may send
+;;      messages on its outgoing channels I -> K.
+;;
+;; Therefore a channel SRC -> DST is definitely unchanged when
+;; both:
+;;
+;;      SRC != I
+;;      DST != I
+;;
+;; The first condition protects against messages sent by I.
+;; The second condition protects against the consumed channel.
+;; ------------------------------------------------------------
+
+(defthm channel-state-after-receive-step-when-src-and-dst-different
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :receive)
+    (not
+     (equal
+      src
+      (pid input)))
+    (not
+     (equal
+      dst
+      (pid input))))
+   (equal
+    (channel-state
+     src
+     dst
+     (channels
+      (system-step st input)))
+    (channel-state
+     src
+     dst
+     (channels st)))))
+
+;; ------------------------------------------------------------
+;; INPUT-I is a RECEIVE by a post-cut process.
+;; INPUT-J is a RECEIVE by a process that is still pre-cut.
+;;
+;; We want to show that INPUT-J's receive channel was already
+;; nonempty before INPUT-I executes.
+;;
+;; Split on whether INPUT-I is the sender of INPUT-J's channel.
+;;
+;; Case 1:
+;;   SENDER(INPUT-J) != PID(INPUT-I)
+;;
+;;   We already know PID(INPUT-J) != PID(INPUT-I) from the
+;;   POST/PRE statuses.  Therefore both the source and the
+;;   destination of INPUT-J's channel differ from PID(INPUT-I).
+;;   The previous channel-preservation lemma applies.
+;;
+;; Case 2:
+;;   SENDER(INPUT-J) = PID(INPUT-I)
+;;
+;;   INPUT-I is post-cut and INPUT-J is pre-cut.  Since
+;;   SENDER(INPUT-J) is an incoming neighbor of PID(INPUT-J),
+;;   GOOD-STATE-P converts that to the corresponding NBRS-TO
+;;   relation.  CUT-MARKERS-IN-TRANSIT-P then says that the
+;;   channel already contains the target marker, hence it is
+;;   nonempty.
+;; ------------------------------------------------------------
+
+(defthm receive-channel-consp-before-post-cut-receive-step
+  (implies
+   (and
+    (cut-markers-in-transit-p m st)
+    (good-state-p st)
+    (equal
+     (ttype input-i)
+     :receive)
+    (equal
+     (ttype input-j)
+     :receive)
+    (memberp
+     (pid input-j)
+     (proc-ids st))
+    (memberp
+     (sender input-j)
+     (proc-ids st))
+    (memberp
+     (sender input-j)
+     (nbrs-from
+      (g (pid input-j)
+         (procs st))))
+    (consp
+     (channel-state
+      (sender input-j)
+      (pid input-j)
+      (channels
+       (system-step st input-i))))
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-i)))
+    (cm-cut-not-taken-p
+     (process-cut-step
+      input-i
+      st
+      m)
+     (pid input-j)))
+   ;; Therefore INPUT-J's channel was already nonempty.
+   (consp
+    (channel-state
+     (sender input-j)
+     (pid input-j)
+     (channels st))))
+  :hints
+  (("Goal"
+    ;; Is INPUT-I the source of INPUT-J's receive channel?
+    :cases
+    ((equal
+      (sender input-j)
+      (pid input-i))))))
+
+;; ------------------------------------------------------------
+;; SEND-MSG-ALL-OUTGOING-CHANNELS only changes channels
+;; whose source is I.
+;;
+;; Therefore, if SRC is different from I, the channel
+;;
+;;     SRC -> DST
+;;
+;; is unchanged.
+;; ------------------------------------------------------------
+
+(defthm channel-state-of-send-msg-all-outgoing-channels-when-src-different
+  (implies
+   (not
+    (equal src i))
+   (equal
+    (channel-state
+     src
+     dst
+     (send-msg-all-outgoing-channels
+      msg
+      i
+      nbrs
+      channels))
+    (channel-state
+     src
+     dst
+     channels)))
+  :hints
+  (("Goal"
+    :induct
+    (send-msg-all-outgoing-channels
+     msg
+     i
+     nbrs
+     channels))))
+
+;; ------------------------------------------------------------
+;; A START-CHECKPOINT step sends marker messages only from
+;; PID(INPUT) to its outgoing neighbors.
+;;
+;; Therefore, any channel whose source SRC is different from
+;; PID(INPUT) is unchanged by the checkpoint-start step.
+;; ------------------------------------------------------------
+
+(defthm channel-state-after-start-checkpoint-step-when-src-different
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :start-checkpoint)
+    (not
+     (equal
+      src
+      (pid input))))
+   (equal
+    (channel-state
+     src
+     dst
+     (channels
+      (system-step st input)))
+    (channel-state
+     src
+     dst
+     (channels st)))))
+
+;; ------------------------------------------------------------
+;; INPUT-I is a START-CHECKPOINT step by a process that is
+;; already post-cut with respect to the target cut M.
+;;
+;; INPUT-J is a RECEIVE by a process that is still pre-cut.
+;;
+;; We show that INPUT-J's receive channel was already nonempty
+;; before INPUT-I.
+;;
+;; Case 1:
+;;   SENDER(INPUT-J) != PID(INPUT-I)
+;;
+;;   START-CHECKPOINT only sends messages from PID(INPUT-I),
+;;   so INPUT-J's channel is unchanged.
+;;
+;; Case 2:
+;;   SENDER(INPUT-J) = PID(INPUT-I)
+;;
+;;   INPUT-I is post-cut and INPUT-J is pre-cut.  The
+;;   marker-in-transit invariant therefore guarantees that
+;;   the target marker is already in this channel, so the
+;;   channel was already nonempty.
+;; ------------------------------------------------------------
+
+(defthm receive-channel-consp-before-post-cut-start-checkpoint-step
+  (implies
+   (and
+    (cut-markers-in-transit-p
+     m st)
+    (good-state-p st)
+    (equal
+     (ttype input-i)
+     :start-checkpoint)
+    (equal
+     (ttype input-j)
+     :receive)
+    (memberp
+     (pid input-j)
+     (proc-ids st))
+    (memberp
+     (sender input-j)
+     (proc-ids st))
+    (memberp
+     (sender input-j)
+     (nbrs-from
+      (g (pid input-j)
+         (procs st))))
+    (consp
+     (channel-state
+      (sender input-j)
+      (pid input-j)
+      (channels
+       (system-step st input-i))))
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-i)))
+    (cm-cut-not-taken-p
+     (process-cut-step
+      input-i
+      st
+      m)
+     (pid input-j)))
+   ;; Hence INPUT-J's receive channel was already nonempty.
+   (consp
+    (channel-state
+     (sender input-j)
+     (pid input-j)
+     (channels st))))
+  :hints
+  (("Goal"
+    ;; Split according to whether INPUT-I is the source of
+    ;; INPUT-J's receive channel.
+    :cases
+    ((equal
+      (sender input-j)
+      (pid input-i))))))
+
+;; ------------------------------------------------------------
+;; A NOP step does not change any channel.
+;;
+;; Therefore every channel SRC -> DST is exactly the same
+;; before and after executing a :NOP input.
+;; ------------------------------------------------------------
+
+(defthm channel-state-after-nop-step
+  (implies
+   (equal
+    (ttype input)
+    :nop)
+   (equal
+    (channel-state
+     src
+     dst
+     (channels
+      (system-step st input)))
+    (channel-state
+     src
+     dst
+     (channels st)))))
+
+;; ------------------------------------------------------------
+;; INPUT-J is legal before moving it to the left of INPUT-I.
+;;
+;; We know INPUT-I ; INPUT-J is legal in the original execution.
+;; INPUT-I is post-cut, while INPUT-J is still pre-cut immediately
+;; before it executes.
+;;
+;; The marker-in-transit invariant rules out the only problematic
+;; dependency: INPUT-I cannot be responsible for creating the
+;; message that makes a pre-cut INPUT-J receive legal.
+;; ------------------------------------------------------------
+
+(defthm post-pre-input-j-legal-before-input-i
+  (let*
+      ((m-after-i
+        (process-cut-step
+         input-i
+         st
+         m)))
+    (implies
+     (and
+      (cut-markers-in-transit-p
+       m
+       st)
+      (cut-meta-imp-consistent-p
+       m
+       st)
+      (recovery-free-state-p st)
+      (good-cut-meta-p m)
+      (good-state-p st)
+      (legal-input-sequencep
+       st
+       (list input-i input-j))
+      (cl-checkpoint-body-input-p
+       input-i)
+      (cl-checkpoint-body-input-p
+       input-j)
+      (not
+       (cm-cut-not-taken-p
+        m
+        (pid input-i)))
+      (cm-cut-not-taken-p
+       m-after-i
+       (pid input-j)))
+     (legal-inputp
+      st
+      input-j)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints
+  (("Goal"
+    :cases
+    ((equal (ttype input-i) :nop)
+     (equal (ttype input-i) :normal)
+     (equal (ttype input-i) :receive)
+     (equal (ttype input-i) :start-checkpoint)
+     (equal (ttype input-j) :nop)
+     (equal (ttype input-j) :normal)
+     (equal (ttype input-j) :receive)
+     (equal (ttype input-j) :start-checkpoint))
+    :in-theory
+    (disable
+     good-state-p
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     recovery-free-state-p
+     good-cut-meta-p
+    ; legal-inputp
+     process-cut-step
+     system-step
+     step-normal
+     step-rcv
+     step-checkpoint
+     get-msg-from-channel
+     cm-cut-not-taken-p))
+   ("Subgoal 7''"
+    :cases
+    ((equal
+    (sender input-j)
+    (pid input-i))))
+      ("Subgoal 2.1"
+    :cases
+    ((equal
+    (sender input-j)
+    (pid input-i))))))
+
+;; ------------------------------------------------------------
+;; If a sequence of inputs is legal from ST, then its first
+;; input is legal in ST.
+;;
+;; This is the first obligation in the recursive definition of
+;; LEGAL-INPUT-SEQUENCEP.
+;; ------------------------------------------------------------
+
+(defthm legal-input-sequencep-implies-first-legal
+  (implies
+   (and
+    (consp inputs)
+    (legal-input-sequencep st inputs))
+   (legal-inputp
+    st
+    (first inputs))))
+
+;; ------------------------------------------------------------
+;; If the two-input sequence (INPUT-I INPUT-J) is legal from ST,
+;; then INPUT-I is legal in ST.
+;; ------------------------------------------------------------
+
+(defthm legal-input-sequencep-of-two-implies-first-legal
+  (implies
+   (legal-input-sequencep
+    st
+    (list input-i input-j))
+   (legal-inputp
+    st
+    input-i))
+    :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints (("Goal"
+	   :in-theory (disable legal-inputp))))
+
+;; ------------------------------------------------------------
+;; If the two-input sequence (INPUT-I INPUT-J) is legal from ST,
+;; then after executing INPUT-I, INPUT-J is legal.
+;;
+;; This is the second obligation in the recursive definition of
+;; LEGAL-INPUT-SEQUENCEP for a two-element list.
+;; ------------------------------------------------------------
+
+(defthm legal-input-sequencep-of-two-implies-second-legal
+  (implies
+   (legal-input-sequencep
+    st
+    (list input-i input-j))
+   (legal-inputp
+    (system-step st input-i)
+    input-j))
+    :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints (("Goal"
+	   :in-theory (disable legal-inputp
+			       system-step))))
+
+;; ------------------------------------------------------------
+;; SEND-COMPUTE-MESSAGE never makes a nonempty channel empty.
+;;
+;; It either:
+;;
+;;   - leaves the channels unchanged,
+;;   - recursively considers another outgoing neighbor, or
+;;   - appends a compute message to one channel.
+;;
+;; Appending with SNOC preserves nonemptiness.
+;; ------------------------------------------------------------
+
+(defthm channel-consp-preserved-by-send-compute-message
+  (implies
+   (consp
+    (channel-state
+     src
+     dst
+     channels))
+   (consp
+    (channel-state
+     src
+     dst
+     (send-compute-message
+      local-state
+      i
+      nbrs
+      channels)))))
+
+;; ------------------------------------------------------------
+;; A NORMAL step never removes messages from any channel.
+;;
+;; It may append a newly computed message to some outgoing
+;; channels of PID(INPUT), but appending preserves nonemptiness.
+;;
+;; Therefore, if SRC -> DST is nonempty before the NORMAL step,
+;; it is still nonempty afterwards.
+;; ------------------------------------------------------------
+
+(defthm channel-consp-preserved-by-normal-step
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :normal)
+    (consp
+     (channel-state
+      src
+      dst
+      (channels st))))
+   (consp
+    (channel-state
+     src
+     dst
+     (channels
+      (system-step st input))))))
+
+;; A START-CHECKPOINT step cannot make an already nonempty
+;; channel empty.
+;;
+;; START-CHECKPOINT sends marker messages on outgoing channels.
+;; This may append to some channels, but it never removes a
+;; message from any channel.
+;;
+;; Therefore, if SRC -> DST is nonempty before the step, it
+;; remains nonempty afterward.
+;; ------------------------------------------------------------
+
+(defthm channel-consp-preserved-by-start-checkpoint-step
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :start-checkpoint)
+    (consp
+     (channel-state
+      src
+      dst
+      (channels st))))
+   (consp
+    (channel-state
+     src
+     dst
+     (channels
+      (system-step st input))))))
+
+;; ------------------------------------------------------------
+;; A RECEIVE step at process PID(INPUT) cannot make a
+;; nonempty channel SRC -> DST empty when DST is a different
+;; process.
+;;
+;; A RECEIVE may:
+;;
+;;   - remove one message from SENDER(INPUT) -> PID(INPUT);
+;;   - send marker/recovery messages from PID(INPUT) to
+;;     outgoing neighbors.
+;;
+;; If DST != PID(INPUT), the target SRC -> DST channel is not
+;; the channel from which the receive removes a message.
+;;
+;; Any protocol send can only append to SRC -> DST, so an
+;; already nonempty channel remains nonempty.
+;; ------------------------------------------------------------
+
+(defthm channel-consp-preserved-by-receive-step-when-dst-different
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :receive)
+    (not
+     (equal
+      dst
+      (pid input)))
+    (consp
+     (channel-state
+      src
+      dst
+      (channels st))))
+   (consp
+    (channel-state
+     src
+     dst
+     (channels
+      (system-step st input))))))
+
+;; ------------------------------------------------------------
+;; SWAPPED-ORDER LEGALITY OF INPUT-I
+;;
+;; Original execution:
+;;
+;;        ST --INPUT-I--> ... --INPUT-J-->
+;;
+;; is legal.
+;;
+;; INPUT-I belongs to a process that is already POST-cut,
+;; while INPUT-J is still PRE-cut after INPUT-I.
+;;
+;; To swap the two inputs, we must show that INPUT-I is still
+;; legal after executing INPUT-J first:
+;;
+;;        ST --INPUT-J--> ...
+;;                         ^
+;;                         INPUT-I must be legal here.
+;; ------------------------------------------------------------
+
+(defthm post-pre-input-i-legal-after-input-j
+  (implies
+   (and
+    (cut-markers-in-transit-p
+     m st)
+    (cut-meta-imp-consistent-p
+     m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st
+     (list input-i input-j))
+    (cl-checkpoint-body-input-p
+     input-i)
+    (cl-checkpoint-body-input-p
+     input-j)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-i)))
+    (cm-cut-not-taken-p
+     (process-cut-step
+      input-i
+      st
+      m)
+     (pid input-j)))
+   ;; After moving INPUT-J first, INPUT-I remains legal.
+   (legal-inputp
+    (system-step st input-j)
+    input-i))
+    :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints
+  (("Goal"
+    :cases
+    ((equal (ttype input-i) :nop)
+     (equal (ttype input-i) :normal)
+     (equal (ttype input-i) :receive)
+     (equal (ttype input-i) :start-checkpoint)
+     (equal (ttype input-j) :nop)
+     (equal (ttype input-j) :normal)
+     (equal (ttype input-j) :receive)
+     (equal (ttype input-j) :start-checkpoint))
+    :in-theory
+    (disable
+     good-state-p
+     recovery-free-state-p
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     no-recovery-step-p
+     good-cut-meta-p
+    ; legal-inputp
+     process-cut-step
+     system-step
+     step-normal
+     step-rcv
+     step-checkpoint
+     get-msg-from-channel
+     cm-cut-not-taken-p))))
+
+;; ------------------------------------------------------------
+;; A POST process and a PRE process cannot be the same process.
+;;
+;; INPUT-I is already post-cut in M.
+;;
+;; INPUT-J is still pre-cut after PROCESS-CUT-STEP.  Since
+;; PROCESS-CUT-STEP never adds a process back into
+;; :CUT-NOT-TAKEN, INPUT-J was also pre-cut in M.
+;;
+;; Therefore PID(INPUT-I) and PID(INPUT-J) must be different.
+;; ------------------------------------------------------------
+
+(defthm post-pre-process-cut-step-implies-pids-different
+  (implies
+   (and
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-i)))
+    (cm-cut-not-taken-p
+     (process-cut-step input-i st m)
+     (pid input-j)))
+   (not
+    (equal
+     (pid input-i)
+     (pid input-j))))
+    :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+;; ;; ------------------------------------------------------------
+;; ;; A POST-CUT input followed by a PRE-CUT input is swappable
+;; ;; in the implementation.
+;; ;;
+;; ;; M and ST describe the implementation immediately before
+;; ;; INPUT-I.
+;; ;;
+;; ;; INPUT-I belongs to a process that has already taken the cut.
+;; ;; INPUT-J belongs to a process that is still pre-cut after
+;; ;; INPUT-I executes.
+;; ;;
+;; ;; The marker-in-transit invariant is the key fact used when
+;; ;; moving a PRE-CUT receive backward across INPUT-I: if INPUT-I
+;; ;; could have created the message needed by INPUT-J, the target
+;; ;; marker separating the cut would already be ahead of that
+;; ;; message on the relevant channel.
+;; ;;
+;; ;; The consistency and well-formedness invariants provide the
+;; ;; metadata/implementation facts needed to interpret the cut
+;; ;; status correctly.
+;; ;; ------------------------------------------------------------
+
+;; ------------------------------------------------------------
+;; Starting condition for a local POST ; PRE swap.
+;;
+;; ST and M describe the implementation and cut metadata
+;; immediately before INPUT-1 executes.
+;;
+;; INPUT-1 is already POST-cut.
+;; INPUT-2 is still PRE-cut after INPUT-1 executes.
+;;
+;; The state satisfies the implementation/cut invariants,
+;; begins recovery-free, and INPUT-1 ; INPUT-2 is the actual
+;; legal checkpoint-body execution.
+;; ------------------------------------------------------------
+
+(defun post-pre-swap-start-p
+    (st m input-1 input-2)
+  (let*
+      ((m-after-1
+        (process-cut-step
+         input-1
+         st
+         m)))
+    (and
+     ;; Cut / implementation invariants.
+     (cut-markers-in-transit-p
+      m st)
+     (cut-meta-imp-consistent-p
+      m st)
+     (good-cut-meta-p m)
+     (good-state-p st)
+     ;; We are outside recovery.
+     (recovery-free-state-p st)
+     ;; INPUT-1 ; INPUT-2 is the actual legal order.
+     (legal-input-sequencep
+      st
+      (list input-1 input-2))
+     ;; Both are checkpoint-body inputs.
+     (cl-checkpoint-body-input-p
+      input-1)
+     (cl-checkpoint-body-input-p
+      input-2)
+     ;; INPUT-1 is POST-cut.
+     (not
+      (cm-cut-not-taken-p
+       m
+       (pid input-1)))
+     ;; INPUT-2 is still PRE-cut immediately before it executes.
+     (cm-cut-not-taken-p
+     m-after-1
+     (pid input-2)))))
+
+;; Bridge from the cut-oriented hypothesis used by the global reordering
+;; argument to the semantic independence contract used by the local
+;; commutation library.  This is where the good-state, cut-consistency,
+;; marker-in-transit, legality, and recovery-free assumptions are consumed.
+(defthm post-pre-two-imp-inputs-swappable-p
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (two-imp-inputs-swappable-p
+    st input-1 input-2))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     process-cut-step
+     recovery-free-state-p
+     good-state-p
+     legal-input-sequencep
+     legal-inputp
+     cm-cut-not-taken-p
+     any-process-recovering-p
+     append
+     any-snapshot-checkpointing-p
+     no-recovery-step-p
+     system-step
+     cl-checkpoint-body-input-p
+     cut-markers-in-transit-p
+     recovery-free-state-p)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+;; ------------------------------------------------------------
+;; A normal-message send by I1 commutes exactly with sending
+;; MSG on all outgoing channels of a different process I2.
+;;
+;; SEND-COMPUTE-MESSAGE only updates channels sourced by I1.
+;; SEND-MSG-ALL-OUTGOING-CHANNELS only updates channels sourced
+;; by I2.
+;;
+;; Since I1 != I2, the channel updates commute exactly.
+;; ------------------------------------------------------------
+
+(defthm send-compute-message-send-msg-all-outgoing-different-senders-commute
+  (implies
+   (not
+    (equal i1 i2))
+   (equal
+    (send-msg-all-outgoing-channels
+     msg
+     i2
+     nbrs2
+     (send-compute-message
+      local1
+      i1
+      nbrs1
+      channels))
+    (send-compute-message
+     local1
+     i1
+     nbrs1
+     (send-msg-all-outgoing-channels
+      msg
+      i2
+      nbrs2
+      channels))))
+  :hints
+  (("Goal"
+    :induct
+    (send-compute-message
+     local1
+     i1
+     nbrs1
+     channels)
+    :in-theory
+    (disable
+     send-msg-all-outgoing-channels))))
+
+;; ------------------------------------------------------------
+;; Sending messages from another source I2 cannot affect the
+;; final I1 -> DST channel produced by I1's own outgoing sends.
+;;
+;; The I2 send changes only channels sourced by I2.
+;; Since I1 != I2, I1's starting row is unchanged; therefore
+;; running the same I1 outgoing sends produces the same
+;; I1 -> DST channel.
+;; ------------------------------------------------------------
+
+(defthm channel-state-of-send-msg-all-after-other-sender
+  (implies
+   (not
+    (equal i1 i2))
+   (equal
+    (channel-state
+     i1
+     dst
+     (send-msg-all-outgoing-channels
+      msg1
+      i1
+      nbrs1
+      (send-msg-all-outgoing-channels
+       msg2
+       i2
+       nbrs2
+       channels)))
+    (channel-state
+     i1
+     dst
+     (send-msg-all-outgoing-channels
+      msg1
+      i1
+      nbrs1
+      channels)))))
+
+;; ------------------------------------------------------------
+;; Sending messages from two different source processes
+;; commutes exactly at the raw channel level.
+;;
+;; Each SEND-MSG-ALL-OUTGOING-CHANNELS only updates channels
+;; whose source is its own process ID.
+;;
+;; Therefore, when I1 != I2, the two sets of channel updates
+;; are disjoint by source and commute.
+;; ------------------------------------------------------------
+
+(defthm send-msg-all-outgoing-different-senders-commute
+  (implies
+   (not
+    (equal i1 i2))
+   (equal
+    (send-msg-all-outgoing-channels
+     msg2
+     i2
+     nbrs2
+     (send-msg-all-outgoing-channels
+      msg1
+      i1
+      nbrs1
+      channels))
+    (send-msg-all-outgoing-channels
+     msg1
+     i1
+     nbrs1
+     (send-msg-all-outgoing-channels
+      msg2
+      i2
+      nbrs2
+      channels)))))
+
+;; Raw-channel adjacent-swap theorem.  Unlike the projection lemmas above,
+;; this conclusion is exact equality: NOP is inert, normal sends commute by
+;; source, legal receives remove fixed FIFO heads, and checkpoint starts
+;; broadcast from distinct sources.
+(defthm two-imp-inputs-commute-channels
+  (implies
+   (two-imp-inputs-swappable-p
+    st input-1 input-2)
+   (equal
+    (channels
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (channels
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    ;; Split the proof according to the implementation input types and use
+    ;; the exact commutation facts established in the channel library.
+    :in-theory
+    (disable get-msg-from-channel
+             remove-message-from-channel
+	     start-checkpoint-helper
+	     create-marker-message
+	     update-proc-for-normal-msg-core
+	    ; step-normal
+	     )
+    :cases
+    ((equal (ttype input-1) :nop)
+     (equal (ttype input-1) :normal)
+     (equal (ttype input-1) :receive)
+     (equal (ttype input-1) :start-checkpoint)
+     (equal (ttype input-2) :nop)
+     (equal (ttype input-2) :normal)
+     (equal (ttype input-2) :receive)
+     (equal (ttype input-2) :start-checkpoint)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Checkpoint-control commutation by input-type pair
+;;
+;; CL-CHECKPOINT-CONTROL-EQUIVALENT-P observes each process's COUNTER and
+;; SNAPSHOT-IDS.  Unlike the visible-process and channel components, these
+;; fields are intentionally modified by :start-checkpoint and marker
+;; receives.  We therefore prove the interesting type pairs separately,
+;; retain both orientations where a mixed pair is asymmetric syntactically,
+;; and finish with one exhaustive dispatcher theorem.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; A NOP is operational identity.  This closes every case in which either
+;; side of the adjacent transposition is :nop.
+(defthm system-step-when-nop
+  (implies
+   (equal
+    (ttype input)
+    :nop)
+   (equal
+    (system-step st input)
+    st)))
+
+;; The pointwise checkpoint-control relation is reflexive; it is the terminal
+;; fact for cases whose two process tables simplify to the same term.
+(defthm checkpoint-control-equivalent-p-reflexive
+  (cl-checkpoint-control-equivalent-p
+   ids
+   procs
+   procs))
+
+;; Receive/receive base case under the abstract swappability contract.  Legal
+;; receives at different PIDs may update snapshot metadata, but their
+;; observed counter/SID lists remain pointwise equivalent after swapping.
+(defthm checkpoint-control-receive-receive-commute
+  (implies
+   (and
+    (equal (ttype input-1) :receive)
+    (equal (ttype input-2) :receive)
+    (two-imp-inputs-swappable-p
+     st input-1 input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     get-msg-from-channel
+     remove-message-from-channel))))
+
+;; Specialize the abstract receive/receive result to a post-cut/pre-cut pair
+;; by deriving TWO-IMP-INPUTS-SWAPPABLE-P from the cut invariants.
+(defthm post-pre-receive-receive-checkpoint-control
+  (implies
+   (and
+    (equal (ttype input-1) :receive)
+    (equal (ttype input-2) :receive)
+    (post-pre-swap-start-p
+     st m input-1 input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      checkpoint-control-receive-receive-commute))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     post-pre-two-imp-inputs-swappable-p
+     two-imp-inputs-swappable-p
+     checkpoint-control-receive-receive-commute
+     cl-checkpoint-control-equivalent-p
+     system-step))))
+
+;; Two normal inputs do not modify checkpoint counters or snapshot-ID lists,
+;; so checkpoint-control equivalence holds without a swappability hypothesis.
+(defthm checkpoint-control-normal-normal-commute
+  (implies
+   (and
+    (equal (ttype input-1) :normal)
+    (equal (ttype input-2) :normal))
+   (cl-checkpoint-control-equivalent-p
+    ids
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1)))))
+
+;; Mixed normal/receive base case, with normal first in the original order.
+;; The swappability contract guarantees the receive consumes the same FIFO
+;; head in both executions.
+(defthm checkpoint-control-normal-receive-commute
+  (implies
+   (and
+    (equal (ttype input-1) :normal)
+    (equal (ttype input-2) :receive)
+    (two-imp-inputs-swappable-p
+     st input-1 input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     get-msg-from-channel))))
+
+;; Cut-oriented wrapper for the normal/receive base case.
+(defthm post-pre-normal-receive-checkpoint-control
+  (implies
+   (and
+    (equal (ttype input-1) :normal)
+    (equal (ttype input-2) :receive)
+    (post-pre-swap-start-p
+     st m input-1 input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      checkpoint-control-normal-receive-commute)))))
+
+;; Reverse mixed orientation: receive first, then normal.  This is stated as
+;; a separate theorem so ACL2 need not synthesize argument permutations
+;; during the final type dispatch.
+(defthm checkpoint-control-normal-receive-commute2
+  (implies
+   (and
+    (equal (ttype input-1) :receive)
+    (equal (ttype input-2) :normal)
+    (two-imp-inputs-swappable-p
+     st input-1 input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     get-msg-from-channel))))
+
+;; Cut-oriented wrapper for the receive/normal orientation.
+(defthm post-pre-normal-receive-checkpoint-control2
+  (implies
+   (and
+    (equal (ttype input-1) :receive)
+    (equal (ttype input-2) :normal)
+    (post-pre-swap-start-p
+     st m input-1 input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      checkpoint-control-normal-receive-commute2)))))
+
+;; A post-cut input and the following still-pre-cut input cannot belong to
+;; the same process: PROCESS-CUT-STEP never makes an already-taken cut revert.
+(defthm post-pre-swap-start-implies-pids-different
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (not
+    (equal
+     (pid input-1)
+     (pid input-2))))
+  :hints
+  (("Goal"
+    :in-theory
+     (disable
+      process-cut-step
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-input-sequencep
+      legal-inputp
+      cl-checkpoint-body-input-p
+      cm-cut-not-taken-p
+      system-step))))
+
+;; Symmetric spelling of PID disequality, registered only for explicit use.
+;; It avoids depending on ACL2 to orient EQUAL in mixed start/normal proofs.
+(defthm post-pre-swap-start-implies-reversed-pids-different
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (not
+    (equal
+     (pid input-2)
+     (pid input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-swap-start-implies-pids-different
+      (st st)
+      (m m)
+      (input-1 input-1)
+      (input-2 input-2)))
+    :cases
+    ((equal
+      (pid input-2)
+      (pid input-1)))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     post-pre-swap-start-implies-pids-different)))
+:rule-classes nil)
+
+;; Exact process-table commutation for checkpoint-start followed by a normal
+;; step at a different PID.  Equality is stronger than the control relation
+;; and lets the wrapper below close by reflexivity.
+(defthm start-checkpoint-normal-procs-commute
+  (implies
+   (and
+    (equal (ttype input-1) :start-checkpoint)
+    (equal (ttype input-2) :normal)
+    (not
+     (equal
+      (pid input-1)
+      (pid input-2))))
+   (equal
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable start-checkpoint-helper
+      create-marker-message
+      send-compute-message))))
+
+;; Normal/start is the reverse syntactic orientation of the exact theorem
+;; above; PID disequality from the post/pre predicate supplies its side case.
+(defthm post-pre-normal-start-checkpoint-checkpoint-control
+  (implies
+   (and
+    (equal (ttype input-1) :normal)
+    (equal (ttype input-2) :start-checkpoint)
+    (post-pre-swap-start-p
+     st m input-1 input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-swap-start-implies-reversed-pids-different
+      (st st)
+      (m m)
+      (input-1 input-1)
+      (input-2 input-2))
+     (:instance
+      start-checkpoint-normal-procs-commute
+      (st st)
+      (input-1 input-2)
+      (input-2 input-1)))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     post-pre-swap-start-implies-pids-different
+    ; post-pre-swap-start-implies-reversed-pids-different
+     start-checkpoint-normal-procs-commute
+     system-step
+     cl-checkpoint-control-equivalent-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Generic update rules for the checkpoint-control relation
+;;
+;; The difficult receive/start expansions eventually reduce to replacing a
+;; single process record.  These congruence lemmas let those proofs reason
+;; only about COUNTER and SNAPSHOT-IDS rather than recursively rebuilding the
+;; complete process table.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; If two replacement records agree on the observed control fields, placing
+;; them into the same process table at the same key yields equivalent tables.
+(defthm checkpoint-control-equivalent-p-of-single-proc-update
+  (implies
+   (and
+    (equal
+     (counter p1)
+     (counter p2))
+    (equal
+     (snapshot-ids p1)
+     (snapshot-ids p2)))
+   (cl-checkpoint-control-equivalent-p
+    ids
+    (s i p1 procs)
+    (s i p2 procs)))
+  :hints
+  (("Goal"
+    :induct
+    (cl-checkpoint-control-equivalent-p
+     ids procs procs))
+   ("Subgoal *1/2"
+    :cases
+    ((equal
+      (car ids)
+      i)))))
+
+;; If two tables are already control-equivalent, installing the same process
+;; record at the same key on both sides preserves the relation.
+(defthm checkpoint-control-equivalent-p-preserved-by-same-proc-update
+  (implies
+   (cl-checkpoint-control-equivalent-p
+    ids procs-1 procs-2)
+   (cl-checkpoint-control-equivalent-p
+    ids
+    (s i p procs-1)
+    (s i p procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (cl-checkpoint-control-equivalent-p
+     ids procs-1 procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal
+      (car ids)
+      i)))))
+
+;; Core start/receive theorem.  The steps target distinct PIDs, both inputs
+;; are legal in the common state, and recovery is absent.  The conclusion is
+;; deliberately the control relation: marker handling may reorder hidden
+;; snapshot contents while preserving counters and the snapshot-ID frontier.
+(defthm start-checkpoint-receive-checkpoint-control
+  (implies
+   (and
+    (equal
+     (ttype input-1)
+     :start-checkpoint)
+    (equal
+     (ttype input-2)
+     :receive)
+    (not
+     (equal
+      (pid input-1)
+      (pid input-2)))
+    (legal-inputp
+     st
+     input-1)
+    (legal-inputp
+     st
+     input-2)
+    (recovery-free-state-p st))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1)))))
+
+;; Symmetry is kept as an explicit non-rewrite theorem.  Using it by instance
+;; is predictable and avoids rewrite loops on a symmetric relation.
+(defthm checkpoint-control-equivalent-p-symmetric
+  (implies
+   (cl-checkpoint-control-equivalent-p
+    ids
+    procs-1
+    procs-2)
+   (cl-checkpoint-control-equivalent-p
+    ids
+    procs-2
+    procs-1))
+
+  :rule-classes nil)
+
+;; Receive/start wrapper.  Apply the core start/receive theorem in the
+;; opposite order, then use symmetry to restore the requested conclusion.
+(defthm post-pre-receive-start-checkpoint-checkpoint-control
+  (implies
+   (and
+    (post-pre-swap-start-p
+     st m input-1 input-2)
+    (equal (ttype input-1) :receive)
+    (equal
+     (ttype input-2)
+     :start-checkpoint))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :cases
+    ((equal
+      (pid input-2)
+      (pid input-1)))
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      start-checkpoint-receive-checkpoint-control
+      (input-1 input-2)
+      (input-2 input-1))
+     (:instance
+      checkpoint-control-equivalent-p-symmetric
+      (ids (proc-ids st))
+      (procs-1
+       (procs
+        (system-step
+         (system-step st input-2)
+         input-1)))
+      (procs-2
+       (procs
+        (system-step
+         (system-step st input-1)
+         input-2)))))
+    :in-theory
+    (disable post-pre-two-imp-inputs-swappable-p
+      start-checkpoint-receive-checkpoint-control
+     ; checkpoint-control-equivalent-p-symmetric
+      cl-checkpoint-control-equivalent-p
+      system-step
+      process-cut-step
+      legal-input-sequencep
+      legal-inputp
+      no-recovery-step-p
+      recovery-free-state-p
+      cl-checkpoint-body-input-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p))))
+
+;; Start/receive wrapper in the same orientation as the core theorem.
+(defthm post-pre-start-checkpoint-receive-checkpoint-control
+  (implies
+   (and
+    (post-pre-swap-start-p
+     st m input-1 input-2)
+    (equal
+     (ttype input-1)
+     :start-checkpoint)
+    (equal
+     (ttype input-2)
+     :receive))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      start-checkpoint-receive-checkpoint-control))
+    :in-theory
+    (disable post-pre-two-imp-inputs-swappable-p
+      start-checkpoint-receive-checkpoint-control
+      cl-checkpoint-control-equivalent-p
+      system-step
+      process-cut-step
+      legal-input-sequencep
+      legal-inputp
+      no-recovery-step-p
+      recovery-free-state-p
+      cl-checkpoint-body-input-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p))))
+
+;; Start/normal post-pre case.  The stronger exact process commutation theorem
+;; immediately implies checkpoint-control equivalence.
+(defthm post-pre-start-checkpoint-normal-checkpoint-control
+  (implies
+   (and
+    (post-pre-swap-start-p
+     st m input-1 input-2)
+    (equal
+     (ttype input-1)
+     :start-checkpoint)
+    (equal
+     (ttype input-2)
+     :normal))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      start-checkpoint-normal-procs-commute))
+    :in-theory
+    (disable post-pre-swap-start-p
+      post-pre-two-imp-inputs-swappable-p
+      start-checkpoint-normal-procs-commute
+      cl-checkpoint-control-equivalent-p
+      system-step))))
+
+;; Two starts at distinct PIDs commute exactly in the process table: each
+;; START-CHECKPOINT-HELPER updates only its designated process slot.
+(defthm procs-start-checkpoint-start-checkpoint-different-pids-commute
+  (implies
+   (and
+    (equal
+     (ttype input-1)
+     :start-checkpoint)
+    (equal
+     (ttype input-2)
+     :start-checkpoint)
+    (not
+     (equal
+      (pid input-1)
+      (pid input-2))))
+   (equal
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1)))))
+
+;; Cut-oriented control-equivalence wrapper for the start/start equality.
+(defthm post-pre-start-checkpoint-start-checkpoint-checkpoint-control
+  (implies
+   (and
+    (post-pre-swap-start-p
+     st m input-1 input-2)
+    (equal
+     (ttype input-1)
+     :start-checkpoint)
+    (equal
+     (ttype input-2)
+     :start-checkpoint))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (system-step
+      (system-step st input-1)
+      input-2))
+    (procs
+     (system-step
+      (system-step st input-2)
+      input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      procs-start-checkpoint-start-checkpoint-different-pids-commute))
+    :in-theory
+    (disable post-pre-swap-start-p
+      post-pre-two-imp-inputs-swappable-p
+      procs-start-checkpoint-start-checkpoint-different-pids-commute
+      cl-checkpoint-control-equivalent-p
+      system-step))))
+
+;; Exhaustive checkpoint-control dispatcher.  The body-input recognizers
+;; restrict each input to NOP, NORMAL, RECEIVE, or START-CHECKPOINT; the case
+;; lemmas above discharge all sixteen ordered pairs.  This theorem is the
+;; checkpoint-control component consumed by the local state-equivalence
+;; theorem immediately below.
+(defthm post-pre-two-imp-inputs-commute-checkpoint-control
+    (implies
+     (and
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+    (cl-checkpoint-body-input-p input-1)
+    (cl-checkpoint-body-input-p input-2))
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st)
+    (procs
+     (run-imp
+      st
+      (list input-1 input-2)))
+    (procs
+     (run-imp
+      st
+      (list input-2 input-1)))))
+ :otf-flg t
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     system-step
+      step-rcv
+      step-normal
+      step-checkpoint
+      process-cut-step
+     ; recovery-free-state-p
+      good-state-p
+      good-cut-meta-p
+      cut-meta-imp-consistent-p
+     ; legal-input-sequencep
+      legal-inputp
+      cm-cut-not-taken-p
+      ;cl-checkpoint-body-input-p
+      cut-markers-in-transit-p
+     ; cl-checkpoint-control-equivalent-p
+      ))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Local swap theorem under implementation-state equivalence
+;;
+;; The process, channel, and checkpoint-control results established above
+;; are assembled here.  Thus, exchanging one adjacent post-cut/pre-cut pair
+;; preserves every component observed by STATE-EQUIVALENT-P.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm post-pre-two-imp-inputs-commute-under-state-equivalence
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (state-equivalent-p
+    (run-imp
+     st
+     (list input-1 input-2))
+    (run-imp
+     st
+     (list input-2 input-1))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+      two-imp-inputs-commute-under-procs-equivalence)
+     (:instance
+      two-imp-inputs-commute-channels)
+     (:instance
+      post-pre-two-imp-inputs-commute-checkpoint-control))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+      post-pre-two-imp-inputs-swappable-p
+      system-step
+      procs-equivalent-p
+      cl-checkpoint-control-equivalent-p
+      cl-checkpoint-body-input-p
+      legal-inputp
+      no-recovery-step-p
+      recovery-free-state-p)))
+      :rule-classes nil)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Single-step preservation support library
+;;
+;; The final theorem in this book starts from two already equivalent
+;; implementation states and executes the same checkpoint-body input in
+;; both.  The lemmas below are grouped by the obligations generated by the
+;; four clauses of STATE-EQUIVALENT-P:
+;;
+;;   * recovery-free execution excludes impossible receive branches;
+;;   * visible-process equivalence ignores checkpoint bookkeeping;
+;;   * checkpoint-control equivalence ignores non-control bookkeeping and
+;;     exposes COUNTER and SNAPSHOT-IDS at a selected member process.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; A nonempty channel in a recovery-free state cannot have a recovery
+;; message at its head.  This removes the recovery-message receive branch.
+(defthm no-recovery-msgs-in-state-channels-implies-head-not-recovery
+  (implies
+   (and
+    (no-recovery-msgs-in-channels-p
+     (proc-ids st)
+     (proc-ids st)
+     (channels st))
+    (memberp
+     src
+     (proc-ids st))
+    (memberp
+     dst
+     (proc-ids st))
+    (consp
+     (channel-state
+      src
+      dst
+      (channels st))))
+   (not
+    (equal
+     (msg-type
+      (first
+       (channel-state
+        src
+        dst
+        (channels st))))
+     :recovery)))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      no-recovery-msgs-in-channels-p-implies-get-msg-not-recovery
+      (srcs
+       (proc-ids st))
+      (dsts
+       (proc-ids st))
+      (channels
+       (channels st))
+      (src src)
+      (dst dst)))
+    :in-theory
+    (disable no-recovery-msgs-in-channels-p-implies-get-msg-not-recovery))))
+
+;; LOCAL-STATE is not part of checkpoint control, so independent local-state
+;; updates preserve checkpoint-control equivalence.
+(defthm checkpoint-control-equivalent-p-preserved-by-local-state-updates
+  (implies
+   (cl-checkpoint-control-equivalent-p
+    ids
+    procs-1
+    procs-2)
+   (cl-checkpoint-control-equivalent-p
+    ids
+    (s i
+       (s :local-state
+          new-local-1
+          (g i procs-1))
+       procs-1)
+    (s i
+       (s :local-state
+          new-local-2
+          (g i procs-2))
+       procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal
+      (car ids)
+      i)))))
+
+;; A normal receive may record different snapshot bookkeeping on the two
+;; sides, but visible-process equivalence is preserved when it installs the
+;; same application-visible local state.
+(defthm procs-equivalent-p-preserved-by-same-local-state-and-snapshots-update
+  (implies
+   (procs-equivalent-p
+    ids
+    procs-1
+    procs-2)
+   (procs-equivalent-p
+    ids
+    (s i
+       (s :snapshots snapshots-1
+          (s :local-state new-local
+             (g i procs-1)))
+       procs-1)
+    (s i
+       (s :snapshots snapshots-2
+          (s :local-state new-local
+             (g i procs-2)))
+       procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;; Both LOCAL-STATE and SNAPSHOTS are invisible to checkpoint control.
+;; Consequently, they may be updated independently on the two sides.
+(defthm checkpoint-control-equivalent-p-preserved-by-local-state-and-snapshots-updates
+  (implies
+   (cl-checkpoint-control-equivalent-p
+    ids
+    procs-1
+    procs-2)
+   (cl-checkpoint-control-equivalent-p
+    ids
+    (s i
+       (s :snapshots snapshots-1
+          (s :local-state new-local-1
+             (g i procs-1)))
+       procs-1)
+    (s i
+       (s :snapshots snapshots-2
+          (s :local-state new-local-2
+             (g i procs-2)))
+       procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;; SNAPSHOTS and SNAPSHOT-IDS are invisible to PROCS-EQUIVALENT-P, whose
+;; observations are limited to the three application-visible process fields.
+(defthm procs-equivalent-p-preserved-by-snapshots-and-snapshot-ids-updates
+  (implies
+   (procs-equivalent-p
+    ids
+    procs-1
+    procs-2)
+   (procs-equivalent-p
+    ids
+    (s i
+       (s :snapshots snapshots-1
+          (s :snapshot-ids snapshot-ids-1
+             (g i procs-1)))
+       procs-1)
+    (s i
+       (s :snapshots snapshots-2
+          (s :snapshot-ids snapshot-ids-2
+             (g i procs-2)))
+       procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;; If no listed process is recovering, a listed process cannot individually
+;; have :RECOVERING status.  This closes inconsistent receive branches.
+(defthm no-any-proc-recovering-p-implies-member-not-recovering
+  (implies
+   (and
+    (not
+     (any-proc-recovering-p
+      ids
+      procs))
+    (memberp i ids))
+   (not
+    (equal
+     (proc-status
+      (g i procs))
+     :recovering))))
+
+;; Generic checkpoint-control update rule.  Replacing process I preserves
+;; the list relation whenever agreement of I's old control fields implies
+;; agreement of the replacement processes' control fields.
+(defthm checkpoint-control-equivalent-p-preserved-by-related-proc-updates
+  (implies
+   (and
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (implies
+     (and
+      (equal
+       (counter (g i procs-1))
+       (counter (g i procs-2)))
+      (equal
+       (snapshot-ids (g i procs-1))
+       (snapshot-ids (g i procs-2))))
+     (and
+      (equal
+       (counter new-p-1)
+       (counter new-p-2))
+      (equal
+       (snapshot-ids new-p-1)
+       (snapshot-ids new-p-2)))))
+   (cl-checkpoint-control-equivalent-p
+    ids
+    (s i new-p-1 procs-1)
+    (s i new-p-2 procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;; Pointwise projection of SNAPSHOT-IDS from checkpoint-control equivalence.
+;; This rules out branches that classify the same marker as first on one side
+;; and non-first on the other.
+(defthm checkpoint-control-equivalent-p-implies-snapshot-ids-equal
+  (implies
+   (and
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (memberp i ids))
+   (equal
+    (snapshot-ids
+     (g i procs-1))
+    (snapshot-ids
+     (g i procs-2))))
+  :hints
+  (("Goal"
+    :induct
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;; Process-level field abstraction.  Updating any field other than the three
+;; fields observed by PROC-EQUIVALENT-P has no effect on that relation, and
+;; the hidden values installed on the two sides need not be equal.
+(defthm proc-equivalent-p-ignores-non-visible-field-updates
+  (implies
+   (and
+    (not (equal field :local-state))
+    (not (equal field :nbrs-to))
+    (not (equal field :nbrs-from)))
+   (equal
+    (proc-equivalent-p
+     (s field value-1 p-1)
+     (s field value-2 p-2))
+    (proc-equivalent-p
+     p-1
+     p-2))))
+
+;; Lift the preceding field abstraction pointwise over the process table.
+(defthm procs-equivalent-p-ignores-non-visible-field-updates
+  (implies
+   (and
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (not (equal field :local-state))
+    (not (equal field :nbrs-to))
+    (not (equal field :nbrs-from)))
+   (procs-equivalent-p
+    ids
+    (s i
+       (s field value-1
+          (g i procs-1))
+       procs-1)
+    (s i
+       (s field value-2
+          (g i procs-2))
+       procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;; Pointwise projection of COUNTER from checkpoint-control equivalence.  It
+;; ensures that both executions create the same checkpoint SID and marker.
+(defthm checkpoint-control-equivalent-p-implies-counter-equal
+  (implies
+   (and
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (memberp i ids))
+   (equal
+    (counter
+     (g i procs-1))
+    (counter
+     (g i procs-2))))
+  :hints
+  (("Goal"
+    :induct
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;; Most general visible-process replacement rule used by the preservation
+;; proof.  NEW-P-1 and NEW-P-2 may contain arbitrary, asymmetric checkpoint
+;; bookkeeping as long as each preserves the visible fields of its original.
+(defthm procs-equivalent-p-preserved-by-invisible-proc-replacements
+  (implies
+   (and
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (equal
+     (local-state new-p-1)
+     (local-state (g i procs-1)))
+    (equal
+     (nbrs-to new-p-1)
+     (nbrs-to (g i procs-1)))
+    (equal
+     (nbrs-from new-p-1)
+     (nbrs-from (g i procs-1)))
+    (equal
+     (local-state new-p-2)
+     (local-state (g i procs-2)))
+    (equal
+     (nbrs-to new-p-2)
+     (nbrs-to (g i procs-2)))
+    (equal
+     (nbrs-from new-p-2)
+     (nbrs-from (g i procs-2))))
+   (procs-equivalent-p
+    ids
+    (s i new-p-1 procs-1)
+    (s i new-p-2 procs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2))
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Main single-step preservation theorem
+;;
+;; Applying the same legal checkpoint-body input to two recovery-free,
+;; state-equivalent implementation states preserves CL state equivalence.
+;; The proof covers :NOP, :NORMAL, :RECEIVE, and :START-CHECKPOINT through
+;; CL-CHECKPOINT-BODY-INPUT-P and uses the support library above to abstract
+;; from implementation-only snapshot and recovery bookkeeping.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm state-equivalent-p-preserved-by-checkpoint-body-step
+  (implies
+   (and
+    (state-equivalent-p
+     st-1
+     st-2)
+    (cl-checkpoint-body-input-p
+     input)
+    (recovery-free-state-p
+     st-1)
+    (recovery-free-state-p
+     st-2)
+    (legal-inputp
+     st-1
+     input)
+    (legal-inputp
+     st-2
+     input))
+   (state-equivalent-p
+    (system-step st-1 input)
+    (system-step st-2 input))))
+
+;; ------------------------------------------------------------
+;; Equivalent states remain equivalent after executing the
+;; same legal, recovery-free checkpoint-body postfix.
+;; ------------------------------------------------------------
+
+(defthm state-equivalent-p-preserved-by-checkpoint-body-inputs
+  (implies
+   (and
+    (state-equivalent-p
+     st-1
+     st-2)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (cl-checkpoint-body-inputs-p
+     inputs)
+    (legal-input-sequencep
+     st-1
+     inputs)
+    (legal-input-sequencep
+     st-2
+     inputs))
+   (state-equivalent-p
+    (run-imp st-1 inputs)
+    (run-imp st-2 inputs)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     system-step
+     legal-inputp
+     good-state-p
+     recovery-free-state-p
+     cl-checkpoint-body-input-p
+     state-equivalent-p))))
+
+(defthm state-equivalent-p-reflexive
+  (state-equivalent-p st st))
+
+;; ------------------------------------------------------------
+;; Equivalent process tables have identical incoming-neighbor
+;; lists for every process identifier in IDS.
+;;
+;; This is needed for transferring the legality of a :RECEIVE
+;; input from one equivalent state to the other.
+;; ------------------------------------------------------------
+
+(defthm procs-equivalent-p-implies-nbrs-from-equal
+  (implies
+   (and
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (memberp i ids))
+   (equal
+    (g :nbrs-from
+       (g i procs-1))
+    (g :nbrs-from
+       (g i procs-2)))))
+
+(defthm state-equivalent-p-preserves-legal-body-inputp
+  (implies
+   (and
+    (state-equivalent-p
+     st-original
+     st-after-swap)
+    (recovery-free-state-p
+     st-original)
+    (recovery-free-state-p
+     st-after-swap)
+    (cl-checkpoint-body-input-p
+     input)
+    (legal-inputp
+     st-original
+     input))
+   (legal-inputp
+    st-after-swap
+    input)))
+
+(defthm state-equivalent-p-preserves-legal-postfix
+  (implies
+   (and
+    (state-equivalent-p
+     st-original
+     st-after-swap)
+    (recovery-free-state-p
+     st-original)
+    (recovery-free-state-p
+     st-after-swap)
+    (good-state-p st-original)
+    (good-state-p st-after-swap)
+    (cl-checkpoint-body-inputs-p
+     postfix)
+    (legal-input-sequencep
+     st-original
+     postfix))
+   ;; Therefore, the same postfix is legal after the swap.
+   (legal-input-sequencep
+    st-after-swap
+    postfix))
+  :hints (("Goal"
+	  ; :induct (legal-input-sequencep st-after-swap postfix)
+	   :in-theory (disable legal-inputp
+			       state-equivalent-p
+			       recovery-free-state-p
+			       good-state-p
+			       system-step
+			       cl-checkpoint-body-input-p)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+(defthm state-equivalent-p-preserved-by-postfix
+  (implies
+   (and
+    (state-equivalent-p
+     st-original
+     st-after-swap)
+    (recovery-free-state-p st-original)
+    (recovery-free-state-p st-after-swap)
+    (good-state-p st-original)
+    (good-state-p st-after-swap)
+    (cl-checkpoint-body-inputs-p postfix)
+    (legal-input-sequencep
+     st-original
+     postfix))
+   (state-equivalent-p
+    (run-imp st-original postfix)
+    (run-imp st-after-swap postfix)))
+  :hints (("Goal"
+	  ; :induct (legal-input-sequencep st-after-swap postfix)
+	   :in-theory (disable
+			       state-equivalent-p
+			       recovery-free-state-p
+			       good-state-p
+			       run-imp
+			       cl-checkpoint-body-inputs-p))))
+
+;; ------------------------------------------------------------
+;; Legality of a concatenated execution implies legality of
+;; its suffix from the state reached after its prefix.
+;;
+;; If
+;;
+;;     INPUTS-1 ++ INPUTS-2
+;;
+;; is legal from ST, then INPUTS-2 is legal from the state
+;; obtained after executing INPUTS-1.
+;;
+;; There are no free variables in this rewrite rule:
+;; ST, INPUTS-1, and INPUTS-2 all occur in the conclusion.
+;; ------------------------------------------------------------
+
+(defthm legal-input-sequencep-of-append-implies-second
+  (implies
+   (legal-input-sequencep
+    st
+    (append inputs-1 inputs-2))
+   (legal-input-sequencep
+    (run-imp st inputs-1)
+    inputs-2)))
+
+(defthm one-post-pre-swap-with-prefix-and-postfix
+  (let*
+      (;; State immediately before the adjacent pair.
+       (swap-st
+        (run-imp st prefix))
+       ;; States immediately after the two possible pair orders.
+       (original-pair-st
+        (run-imp
+         swap-st
+         (list input-post input-pre)))
+       (swapped-pair-st
+        (run-imp
+         swap-st
+         (list input-pre input-post)))
+       ;; Complete original and swapped sequences.
+       (original-inputs
+        (append (append prefix (list input-post input-pre)) postfix))
+       (swapped-inputs
+        (append (append prefix (list input-pre input-post)) postfix)))
+    (implies
+     (and
+      (legal-input-sequencep
+       st
+       original-inputs)
+      (post-pre-swap-start-p
+       swap-st
+       m-at-swap
+       input-post
+       input-pre)
+      (cl-checkpoint-body-inputs-p
+       postfix)
+      (good-state-p original-pair-st)
+      (good-state-p swapped-pair-st)
+      (recovery-free-state-p original-pair-st)
+      (recovery-free-state-p swapped-pair-st))
+    ;; Both complete executions end in equivalent states.
+    (state-equivalent-p
+       (run-imp st original-inputs)
+       (run-imp st swapped-inputs))))
+  :hints
+(("Goal"
+  :do-not-induct t
+  :use
+  ((:instance
+    post-pre-two-imp-inputs-commute-under-state-equivalence
+    (st
+     (run-imp st prefix))
+    (m
+     m-at-swap)
+    (input-1
+     input-post)
+    (input-2
+     input-pre))
+   (:instance
+    legal-input-sequencep-of-append-implies-second
+    (st
+     st)
+    (inputs-1
+     (append
+      prefix
+      (list input-post input-pre)))
+    (inputs-2
+     postfix))
+   (:instance
+    state-equivalent-p-preserved-by-postfix
+    (st-original
+     (run-imp
+      (run-imp st prefix)
+      (list input-post input-pre)))
+    (st-after-swap
+     (run-imp
+      (run-imp st prefix)
+      (list input-pre input-post)))
+    (postfix
+     postfix)))
+  :in-theory
+  (disable append
+    run-imp
+    recovery-free-state-p
+    good-state-p
+    cl-checkpoint-body-inputs-p
+    post-pre-swap-start-p
+    legal-input-sequencep
+    state-equivalent-p
+;    post-pre-two-imp-inputs-commute-under-state-equivalence
+    legal-input-sequencep-of-append-implies-second
+    state-equivalent-p-preserved-by-postfix))))
+
+;; ------------------------------------------------------------
+;; A swappable pair is legal in its original order.
+;; ------------------------------------------------------------
+
+(defthm two-imp-inputs-swappable-p-implies-original-order-legal
+  (implies
+   (two-imp-inputs-swappable-p
+    st input-1 input-2)
+   (legal-input-sequencep
+    st
+    (list input-1 input-2)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable cl-checkpoint-body-input-p
+	     legal-inputp
+	     system-step))))
+
+;; ------------------------------------------------------------
+;; A swappable pair is also legal in the exchanged order.
+;; ------------------------------------------------------------
+
+(defthm two-imp-inputs-swappable-p-implies-swapped-order-legal
+  (implies
+   (two-imp-inputs-swappable-p
+    st input-1 input-2)
+   (legal-input-sequencep
+    st
+    (list input-2 input-1)))
+    :hints
+  (("Goal"
+    :in-theory
+    (disable cl-checkpoint-body-input-p
+	     legal-inputp
+	     system-step))))
+
+;; ------------------------------------------------------------
+;; The local POST/PRE swap condition is strong enough to
+;; establish all state-quality assumptions needed after the
+;; adjacent pair, in both execution orders.
+;;
+;; In particular:
+;;
+;;   * SWAP-ST is initially good and recovery-free;
+;;   * both orders are legal;
+;;   * both orders perform only non-recovery steps.
+;;
+;; Hence both resulting pair states are good and recovery-free.
+;; ------------------------------------------------------------
+
+(defthm post-pre-swap-start-implies-good-state
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (good-state-p st))
+  :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable good-state-p))))
+
+(defthm post-pre-swap-start-implies-recovery-free-state
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (recovery-free-state-p st))
+  :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints
+  (("Goal"
+    :in-theory
+     (disable
+   ;  post-pre-swap-start-p
+     good-state-p
+     cut-markers-in-transit-p
+     legal-input-sequencep
+     cm-cut-not-taken
+     process-cut-step
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p))))
+
+(defthm post-pre-swap-start-implies-cp-inputs
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (cl-checkpoint-body-inputs-p (list input-1 input-2)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints
+  (("Goal"
+    :in-theory
+     (disable
+     good-state-p
+     cut-markers-in-transit-p
+     legal-input-sequencep
+     cm-cut-not-taken
+     process-cut-step
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p))))
+
+(defthm post-pre-swap-start-implies-cp-inputs-2
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (cl-checkpoint-body-inputs-p (list input-2 input-1)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all))
+  :hints
+  (("Goal"
+    :in-theory
+     (disable
+     good-state-p
+     cut-markers-in-transit-p
+     legal-input-sequencep
+     cm-cut-not-taken
+     process-cut-step
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p))))
+
+(defthm post-pre-swap-start-implies-pair-states-good-and-recovery-free
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (and
+    ;; Original order.
+    (good-state-p
+     (run-imp
+      st
+      (list input-1 input-2)))
+    (recovery-free-state-p
+     (run-imp
+      st
+      (list input-1 input-2)))
+    ;; Swapped order.
+    (good-state-p
+     (run-imp
+      st
+      (list input-2 input-1)))
+    (recovery-free-state-p
+     (run-imp
+      st
+      (list input-2 input-1)))))
+  :hints
+  (("Goal"
+       ; :use ((:instance post-pre-two-imp-inputs-swappable-p ))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     good-state-p
+     cut-markers-in-transit-p
+     legal-input-sequencep
+     cm-cut-not-taken
+     process-cut-step
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     cl-checkpoint-body-input-p
+     run-imp
+     recovery-free-state-p))))
+
+(defthm one-post-pre-swap-with-prefix-and-postfix-final
+  (let*
+      (;; State immediately before the adjacent pair.
+       (swap-st
+        (run-imp st prefix))
+       ;; Complete original and swapped sequences.
+       (original-inputs
+        (append
+         (append prefix
+                 (list input-post input-pre))
+         postfix))
+       (swapped-inputs
+        (append
+         (append prefix
+                 (list input-pre input-post))
+         postfix)))
+    (implies
+     (and
+      (legal-input-sequencep
+       st
+       original-inputs)
+      (post-pre-swap-start-p
+       swap-st
+       m-at-swap
+       input-post
+       input-pre)
+      (cl-checkpoint-body-inputs-p
+       postfix))
+     ;; Both complete executions end in equivalent states.
+     (state-equivalent-p
+      (run-imp st original-inputs)
+      (run-imp st swapped-inputs))))
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; Local POST/PRE swap preserves state equivalence.
+     (:instance
+      post-pre-two-imp-inputs-commute-under-state-equivalence
+      (st
+       (run-imp st prefix))
+      (m
+       m-at-swap)
+      (input-1
+       input-post)
+      (input-2
+       input-pre))
+     ;; The swap-start condition also guarantees that both
+     ;; pair-result states are good and recovery-free.
+     (:instance
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      (st
+       (run-imp st prefix))
+      (m
+       m-at-swap)
+      (input-1
+       input-post)
+      (input-2
+       input-pre))
+     ;; Legality of the entire original execution gives legality
+     ;; of POSTFIX from the original pair-result state.
+     (:instance
+      legal-input-sequencep-of-append-implies-second
+      (st
+       st)
+      (inputs-1
+       (append
+        prefix
+        (list input-post input-pre)))
+      (inputs-2
+       postfix))
+     ;; Propagate pair-state equivalence through the common POSTFIX.
+     (:instance
+      state-equivalent-p-preserved-by-postfix
+      (st-original
+       (run-imp
+        (run-imp st prefix)
+        (list input-post input-pre)))
+      (st-after-swap
+       (run-imp
+        (run-imp st prefix)
+        (list input-pre input-post)))
+      (postfix
+       postfix)))
+    :in-theory
+    (disable append
+      run-imp
+      recovery-free-state-p
+      good-state-p
+      cl-checkpoint-body-inputs-p
+      post-pre-swap-start-p
+      legal-input-sequencep
+      state-equivalent-p
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      legal-input-sequencep-of-append-implies-second
+      state-equivalent-p-preserved-by-postfix))))
+
+;; ------------------------------------------------------------
+;; Metadata commutativity for one adjacent POST/PRE swap.
+;;
+;; ST and M describe the implementation state and scan metadata
+;; immediately before INPUT-POST executes in the original order.
+;;
+;; The theorem says that processing:
+;;
+;;     INPUT-POST ; INPUT-PRE
+;;
+;; and:
+;;
+;;     INPUT-PRE ; INPUT-POST
+;;
+;; produces exactly the same cut metadata after both inputs.
+;; ------------------------------------------------------------
+
+;; (defthm
+;;   post-pre-two-process-cut-steps-commute
+
+;;   (let*
+;;       (;; --------------------------------------------------
+;;        ;; Original order: INPUT-POST ; INPUT-PRE
+;;        ;; --------------------------------------------------
+
+;;        (m-after-post
+;;         (process-cut-step
+;;          input-post
+;;          st
+;;          m))
+
+;;        (st-after-post
+;;         (system-step
+;;          st
+;;          input-post))
+
+;;        (m-after-post-pre
+;;         (process-cut-step
+;;          input-pre
+;;          st-after-post
+;;          m-after-post))
+
+;;        ;; --------------------------------------------------
+;;        ;; Swapped order: INPUT-PRE ; INPUT-POST
+;;        ;; --------------------------------------------------
+
+;;        (m-after-pre
+;;         (process-cut-step
+;;          input-pre
+;;          st
+;;          m))
+
+;;        (st-after-pre
+;;         (system-step
+;;          st
+;;          input-pre))
+
+;;        (m-after-pre-post
+;;         (process-cut-step
+;;          input-post
+;;          st-after-pre
+;;          m-after-pre)))
+
+;;     (implies
+;;      (post-pre-swap-start-p
+;;       st
+;;       m
+;;       input-post
+;;       input-pre)
+
+;;      (equal
+;;       m-after-post-pre
+;;       m-after-pre-post)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory
+;;     (disable good-state-p
+;; 	     cut-meta-imp))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; TAGGED INPUT REPRESENTATION
+;;
+;; Every tagged input has exactly two elements:
+;;
+;;     (:BEFORE-CUT INPUT)
+;;
+;; or:
+;;
+;;     (:AFTER-CUT INPUT)
+;;
+;; The tag is stored first so that the later inversion-count and reorder
+;; functions can inspect the cut classification without examining INPUT.
+;;
+;; The complete tagged entry will move whenever a swap is performed.
+;; Therefore, the tag always remains attached to its input occurrence.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DYNAMIC INVERSION COUNT
+;;
+;; INPUTS is executed from left to right using the current ST and M.
+;;
+;; NUMBER-OF-AFTER-CUT-INPUTS-SEEN records how many earlier inputs were
+;; classified as after-cut.
+;;
+;; Whenever a before-cut input is encountered, it forms one inversion with
+;; every earlier after-cut input. Therefore, the accumulator is added to
+;; the result.
+;;
+;; Initial call:
+;;
+;;     (inversion-count st m inputs 0)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; COUNT BEFORE-CUT INPUTS IN AN EXECUTION
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun number-of-before-cut-inputs
+    (st m inputs)
+  (declare
+   (xargs
+    :measure
+    (acl2-count inputs)))
+  (if (endp inputs)
+      0
+    (let* ((input
+            (first inputs))
+           ;; Classify INPUT before executing it.
+           (before-cut-input-p
+            (cm-cut-not-taken-p
+             m
+             (g :pid input)))
+           (next-st
+            (system-step
+             st
+             input))
+           (next-m
+            (process-cut-step
+             input
+             st
+             m)))
+      (if before-cut-input-p
+          (+
+           1
+           (number-of-before-cut-inputs
+            next-st
+            next-m
+            (rest inputs)))
+        (number-of-before-cut-inputs
+         next-st
+         next-m
+         (rest inputs))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; COUNT AFTER-CUT / BEFORE-CUT INVERSIONS
+;;
+;; If the first input is after-cut, every before-cut input in the suffix
+;; forms an inversion with it.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun inversion-count
+    (st m inputs)
+  (declare
+   (xargs
+    :measure
+    (acl2-count inputs)))
+  (if (endp inputs)
+      0
+    (let* ((input
+            (first inputs))
+           ;; Classify INPUT before executing it.
+           (before-cut-input-p
+            (cm-cut-not-taken-p
+             m
+             (g :pid input)))
+           (next-st
+            (system-step
+             st
+             input))
+           (next-m
+            (process-cut-step
+             input
+             st
+             m))
+           (suffix
+            (rest inputs)))
+      (+
+       ;; If INPUT is after-cut, count all later before-cut inputs.
+       (if before-cut-input-p
+           0
+         (number-of-before-cut-inputs
+          next-st
+          next-m
+          suffix))
+       ;; Count inversions whose first input occurs in the suffix.
+       (inversion-count
+        next-st
+        next-m
+        suffix)))))
+
+(defthm natp-of-inversion-count
+  (natp
+   (inversion-count
+    st
+    m
+    inputs))
+  :hints
+  (("Goal"
+    :induct
+    (inversion-count
+     st
+     m
+     inputs))))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; SWAP THE FIRST ADJACENT POST/PRE PAIR
+;;
+;; The returned sequence is explicitly constructed using APPEND so that its
+;; form matches ONE-POST-PRE-SWAP-WITH-PREFIX-AND-POSTFIX-FINAL.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun swap-first-after-before
+    (st m inputs)
+  (declare
+   (xargs
+    :measure
+    (acl2-count inputs)))
+  ;; Fewer than two inputs means no adjacent pair exists.
+  (if (or
+       (endp inputs)
+       (endp (rest inputs)))
+      inputs
+    (let* ((input-post
+            (first inputs))
+           (input-pre
+            (second inputs))
+           (postfix
+            (rest
+             (rest inputs))))
+      (if
+       (post-pre-swap-start-p
+        st
+        m
+        input-post
+        input-pre)
+       (append
+        (list input-pre input-post)
+        postfix)
+       (append
+        (list input-post)
+        (swap-first-after-before
+         (system-step
+          st
+          input-post)
+         (process-cut-step
+          input-post
+          st
+          m)
+         (rest inputs)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; REPEATEDLY REORDER THE COMPLETE RAW INPUT SEQUENCE
+;;
+;; Every iteration:
+;;
+;;   1. Calculates the inversion count by executing the current sequence
+;;      from the supplied initial ST and M.
+;;
+;;   2. Exchanges the first adjacent pair satisfying
+;;      POST-PRE-SWAP-START-P.
+;;
+;;   3. Restarts from the same initial ST and M on the complete updated
+;;      input sequence.
+;;
+;; The explicit decrease test makes the recursive measure visible to ACL2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun reorder-inputs
+    (st m inputs)
+  (declare
+   (xargs
+    :measure
+    (inversion-count
+     st m inputs)
+    :hints
+    (("Goal"
+      :in-theory
+      (disable
+       inversion-count
+       swap-first-after-before)))))
+  (let ((current-count
+         (inversion-count
+          st m inputs)))
+    (if (zp current-count)
+        inputs
+      (let* ((next-inputs
+              (swap-first-after-before
+               st m inputs))
+             (next-count
+              (inversion-count
+               st m next-inputs)))
+        (if (< next-count current-count)
+            (reorder-inputs
+             st m next-inputs)
+          inputs)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; SWAPPING PRESERVES TRUE-LISTP
+;;
+;; The function only preserves or exchanges existing inputs. Therefore,
+;; it cannot change a proper input list into an improper list.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm true-listp-of-swap-first-after-before
+  (implies
+   (true-listp inputs)
+   (true-listp
+    (swap-first-after-before
+     st m inputs)))
+  :hints
+  (("Goal"
+    :induct
+    (swap-first-after-before
+     st m inputs)
+    :in-theory
+    (disable post-pre-swap-start-p
+      system-step
+      process-cut-step))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; SWAPPING PRESERVES CHECKPOINT-BODY INPUTS
+;;
+;; Every output of SWAP-FIRST-AFTER-BEFORE is an input from the original
+;; sequence. The function only changes the position of one adjacent pair.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm checkpoint-body-inputs-p-of-swap-first-after-before
+  (implies
+   (cl-checkpoint-body-inputs-p
+    inputs)
+   (cl-checkpoint-body-inputs-p
+    (swap-first-after-before
+     st m inputs)))
+  :hints
+  (("Goal"
+    :induct
+    (swap-first-after-before
+     st m inputs)
+    :in-theory
+    (disable post-pre-swap-start-p
+      system-step
+      process-cut-step))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; FRONT POST/PRE PAIR PRODUCES EQUIVALENT STATES IN EITHER ORDER
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm front-post-pre-swap-start-implies-state-equivalent
+  (implies
+   (post-pre-swap-start-p
+    st
+    m
+    (first inputs)
+    (second inputs))
+   (state-equivalent-p
+    ;; Original order: POST, PRE.
+    (run-imp
+     st
+     (list
+      (first inputs)
+      (second inputs)))
+    ;; Swapped order: PRE, POST.
+    (run-imp
+     st
+     (list
+      (second inputs)
+      (first inputs)))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-commute-under-state-equivalence
+      (st st)
+      (m m)
+      (input-1
+       (first inputs))
+      (input-2
+       (second inputs))))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     state-equivalent-p
+     run-imp)))
+    :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+(defthm front-post-pre-swap-start-implies-swapped-pair-legal
+  (implies
+   (post-pre-swap-start-p
+    st
+    m
+    (first inputs)
+    (second inputs))
+   (legal-input-sequencep
+    st
+    (list
+     (second inputs)
+     (first inputs))))
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; Swap-start implies the pair is swappable.
+     (:instance
+      post-pre-two-imp-inputs-swappable-p
+      (st st)
+      (m m)
+      (input-1
+       (first inputs))
+      (input-2
+       (second inputs)))
+     ;; A swappable pair is legal in the exchanged order.
+     (:instance
+      two-imp-inputs-swappable-p-implies-swapped-order-legal
+      (st st)
+      (input-1
+       (first inputs))
+      (input-2
+       (second inputs))))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     two-imp-inputs-swappable-p
+     legal-input-sequencep
+     legal-inputp
+     system-step
+     post-pre-two-imp-inputs-swappable-p
+     two-imp-inputs-swappable-p-implies-swapped-order-legal))))
+
+(defthm front-post-pre-swap-start-implies-swapped-postfix-legal
+  (implies
+   (and
+    (consp inputs)
+    (consp (rest inputs))
+    (post-pre-swap-start-p
+     st
+     m
+     (first inputs)
+     (second inputs))
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (legal-input-sequencep
+    ;; State after executing the swapped pair.
+    (run-imp
+     st
+     (list
+      (second inputs)
+      (first inputs)))
+    ;; Common postfix.
+    (rest
+     (rest inputs))))
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; The original and swapped pair-result states are equivalent.
+     (:instance
+      front-post-pre-swap-start-implies-state-equivalent
+      (st st)
+      (m m)
+      (inputs inputs))
+     ;; Both pair-result states are good and recovery-free.
+     (:instance
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      (st st)
+      (m m)
+      (input-1
+       (first inputs))
+      (input-2
+       (second inputs)))
+     ;; Original complete legality gives postfix legality after
+     ;; executing the original pair.
+     (:instance
+      legal-input-sequencep-of-append-implies-second
+      (st st)
+      (inputs-1
+       (list
+        (first inputs)
+        (second inputs)))
+      (inputs-2
+       (rest
+        (rest inputs))))
+     ;; Transfer postfix legality to the swapped pair-result state.
+     (:instance
+      state-equivalent-p-preserves-legal-postfix
+      (st-original
+       (run-imp
+        st
+        (list
+         (first inputs)
+         (second inputs))))
+      (st-after-swap
+       (run-imp
+        st
+        (list
+         (second inputs)
+         (first inputs))))
+      (postfix
+       (rest
+        (rest inputs)))))
+    :in-theory
+    (disable ;; Keep semantic definitions closed.
+      post-pre-swap-start-p
+      state-equivalent-p
+      good-state-p
+      recovery-free-state-p
+      legal-input-sequencep
+      legal-inputp
+      run-imp
+      system-step
+      process-cut-step
+      ;; These rules are instantiated explicitly above.
+      front-post-pre-swap-start-implies-state-equivalent
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      legal-input-sequencep-of-append-implies-second
+      state-equivalent-p-preserves-legal-postfix))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; COMBINE LEGALITY OF A PREFIX AND ITS POSTFIX
+;;
+;; If INPUTS-1 is legal from ST, and INPUTS-2 is legal from the state
+;; reached after INPUTS-1, then their concatenation is legal from ST.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm legal-input-sequencep-of-append-if
+  (implies
+   (and
+    (legal-input-sequencep
+     st
+     inputs-1)
+    (legal-input-sequencep
+     (run-imp st inputs-1)
+     inputs-2))
+   (legal-input-sequencep
+    st
+    (append inputs-1 inputs-2)))
+  :hints
+  (("Goal"
+    :induct
+    (run-imp
+     st
+     inputs-1)
+    :in-theory
+    (disable legal-inputp
+      system-step))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; LEGALITY OF A SELECTED PAIR AT THE FRONT
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm front-post-pre-swap-preserves-legal-input-sequencep
+  (implies
+   (and
+    (consp inputs)
+    (consp (rest inputs))
+    (post-pre-swap-start-p
+     st
+     m
+     (first inputs)
+     (second inputs))
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (legal-input-sequencep
+    st
+    (append
+     (list
+      (second inputs)
+      (first inputs))
+     (rest
+      (rest inputs)))))
+    :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; Legality of the swapped two-input prefix.
+     (:instance
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      (st st)
+      (m m)
+      (inputs inputs))
+     ;; Legality of the postfix from the state reached after
+     ;; executing the swapped pair.
+     (:instance
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      (st st)
+      (m m)
+      (inputs inputs))
+     ;; Combine the legal swapped pair and legal postfix.
+     (:instance
+      legal-input-sequencep-of-append-if
+      (st st)
+      (inputs-1
+       (list
+        (second inputs)
+        (first inputs)))
+      (inputs-2
+       (rest
+        (rest inputs)))))
+    :in-theory
+    (disable
+     cl-checkpoint-body-inputs-p
+     legal-input-sequencep
+     post-pre-swap-start-p
+     run-imp
+     front-post-pre-swap-start-implies-swapped-pair-legal
+     front-post-pre-swap-start-implies-swapped-postfix-legal
+     legal-input-sequencep-of-append-if)))
+    :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+(defthm legal-input-sequencep-implies-rest-legal
+  (implies
+   (and
+    (consp inputs)
+    (legal-input-sequencep
+     st inputs))
+   (legal-input-sequencep
+    (system-step
+     st
+     (first inputs))
+    (rest inputs)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     legal-inputp
+      system-step))))
+
+(defthm checkpoint-body-inputs-p-implies-rest
+  (implies
+   (and
+    (consp inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (cl-checkpoint-body-inputs-p
+    (rest inputs))))
+
+(defthm legal-input-sequencep-of-cons-if
+  (implies
+   (and
+    (legal-inputp
+     st input)
+    (legal-input-sequencep
+     (system-step st input)
+     inputs))
+   (legal-input-sequencep
+    st
+    (cons input inputs)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     legal-inputp
+      system-step))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; THE COMPLETE ONE-SWAP SCAN PRESERVES LEGALITY
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm legal-input-sequencep-of-swap-first-after-before
+  (implies
+   (and
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (legal-input-sequencep
+    st
+    (swap-first-after-before
+     st m inputs)))
+:hints
+(("Goal"
+  :induct
+  (swap-first-after-before
+   st m inputs)
+  :in-theory
+  (disable post-pre-swap-start-p
+    legal-input-sequencep
+    cl-checkpoint-body-inputs-p
+    legal-inputp
+    system-step
+    process-cut-step))
+ ("Subgoal *1/2"
+  :use
+  ((:instance
+    front-post-pre-swap-preserves-legal-input-sequencep
+    (st st)
+    (m m)
+    (inputs inputs)))
+  :in-theory
+  (disable
+   front-post-pre-swap-preserves-legal-input-sequencep
+   post-pre-swap-start-p
+   legal-input-sequencep
+   cl-checkpoint-body-inputs-p))))
+
+(defthm run-imp-when-consp
+  (implies
+   (consp inputs)
+   (equal
+    (run-imp
+     st
+     inputs)
+    (run-imp
+     (system-step
+      st
+      (car inputs))
+     (cdr inputs))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable system-step))))
+
+(defthm swap-first-after-before-preserves-run
+  (implies
+   (and
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (state-equivalent-p
+    (run-imp
+     st inputs)
+    (run-imp
+     st
+     (swap-first-after-before
+      st m inputs))))
+  :hints
+  (
+   ("Subgoal *1/2"
+ :use
+ (;; Obtain the checkpoint-body property of CDR INPUTS.
+  (:instance
+   checkpoint-body-inputs-p-implies-rest
+   (inputs inputs))
+  ;; Obtain the checkpoint-body property of CDDR INPUTS.
+  (:instance
+   checkpoint-body-inputs-p-implies-rest
+   (inputs
+    (rest inputs)))
+  ;; The selected POST/PRE pair is at the front, so PREFIX is NIL.
+  (:instance
+   one-post-pre-swap-with-prefix-and-postfix-final
+   (st st)
+   (prefix nil)
+   (m-at-swap m)
+   (input-post
+    (first inputs))
+   (input-pre
+    (second inputs))
+   (postfix
+    (rest
+     (rest inputs)))))
+ ;; The swap state for an empty prefix is ST.
+ :expand
+ ((run-imp st nil))
+ :in-theory
+ (disable
+  one-post-pre-swap-with-prefix-and-postfix-final
+  checkpoint-body-inputs-p-implies-rest
+  post-pre-swap-start-p
+  cl-checkpoint-body-inputs-p
+  legal-input-sequencep
+  state-equivalent-p
+  run-imp
+  system-step
+  process-cut-step))
+   ("Subgoal *1/3"
+     :in-theory
+    (disable post-pre-swap-start-p
+     ; run-imp-when-consp
+      legal-input-sequencep
+      cl-checkpoint-body-inputs-p
+      state-equivalent-p
+      legal-inputp
+      system-step
+      run-imp
+      process-cut-step))
+   ("Goal"
+    :induct
+    (swap-first-after-before
+     st m inputs)
+    :in-theory
+    (disable post-pre-swap-start-p
+      run-imp-when-consp
+      legal-input-sequencep
+      cl-checkpoint-body-inputs-p
+      state-equivalent-p
+      legal-inputp
+      system-step
+      run-imp
+      process-cut-step)))
+        :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; TRANSITIVITY OF VISIBLE-PROCESS EQUIVALENCE
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm procs-equivalent-p-transitive
+  (implies
+   (and
+    (procs-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (procs-equivalent-p
+     ids
+     procs-2
+     procs-3))
+   (procs-equivalent-p
+    ids
+    procs-1
+    procs-3)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; TRANSITIVITY OF CHECKPOINT-CONTROL EQUIVALENCE
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm checkpoint-control-equivalent-p-transitive
+  (implies
+   (and
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-1
+     procs-2)
+    (cl-checkpoint-control-equivalent-p
+     ids
+     procs-2
+     procs-3))
+   (cl-checkpoint-control-equivalent-p
+    ids
+    procs-1
+    procs-3)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; TRANSITIVITY OF STATE-EQUIVALENT-P
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm state-equivalent-p-transitive
+  (implies
+   (and
+    (state-equivalent-p
+     st-1
+     st-2)
+    (state-equivalent-p
+     st-2
+     st-3))
+   (state-equivalent-p
+    st-1
+    st-3))
+      :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; MAIN REORDER THEOREM
+;;
+;; Repeatedly exchanging dynamically selected after-cut / before-cut pairs
+;; preserves the final implementation state up to STATE-EQUIVALENT-P.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm reorder-inputs-preserves-run
+  (implies
+   (and
+    (true-listp inputs)
+    (cut-markers-in-transit-p
+     m st)
+    (cut-meta-imp-consistent-p
+     m st)
+    (good-cut-meta-p
+     m)
+    (good-state-p
+     st)
+    (recovery-free-state-p
+     st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (state-equivalent-p
+    (run-imp
+     st inputs)
+    (run-imp
+     st
+     (reorder-inputs
+      st m inputs))))
+  :hints
+  (("Goal"
+    :induct
+    (reorder-inputs
+     st m inputs)
+    :in-theory
+    (disable
+     inversion-count
+     swap-first-after-before
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-input-sequencep
+     cl-checkpoint-body-inputs-p
+     state-equivalent-p))
+   ("Subgoal *1/2''"
+    :do-not-induct t
+    :use
+    (;; Original execution is equivalent to the once-swapped execution.
+     (:instance
+      swap-first-after-before-preserves-run)
+     ;; Combine the one-swap result with the induction hypothesis.
+     (:instance
+      state-equivalent-p-transitive
+      (st-1
+       (run-imp
+	st inputs))
+      (st-2
+       (run-imp
+	st
+	(swap-first-after-before
+	 st m inputs)))
+      (st-3
+       (run-imp
+	st
+	(reorder-inputs
+	 st
+	 m
+	 (swap-first-after-before
+	  st m inputs)))))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; COLLECT THE BEFORE-CUT INPUTS
+;;
+;; Each input is classified using the current cut metadata.  ST and M are
+;; then advanced before the remaining inputs are examined.
+;;
+;; The relative order of all before-cut inputs is preserved.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun before-cut-inputs (st m inputs)
+  (declare
+   (xargs
+    :measure
+    (acl2-count inputs)))
+  (if (endp inputs)
+      nil
+    (let* ((input
+            (first inputs))
+           ;; Classify INPUT before advancing the metadata.
+           (before-cut-p
+            (cm-cut-not-taken-p
+             m
+             (pid input)))
+           (next-st
+            (system-step
+             st
+             input))
+           (next-m
+            (process-cut-step
+             input
+             st
+             m))
+           (remaining-before-cut-inputs
+            (before-cut-inputs
+             next-st
+             next-m
+             (rest inputs))))
+      (if before-cut-p
+          (cons
+           input
+           remaining-before-cut-inputs)
+        remaining-before-cut-inputs))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; COLLECT THE AFTER-CUT INPUTS
+;;
+;; An input is after-cut when its process has already taken the cut in the
+;; metadata immediately before that input executes.
+;;
+;; The relative order of all after-cut inputs is preserved.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun after-cut-inputs (st m inputs)
+  (declare
+   (xargs
+    :measure
+    (acl2-count inputs)))
+  (if (endp inputs)
+      nil
+    (let* ((input
+            (first inputs))
+           ;; Classify INPUT before advancing the metadata.
+           (before-cut-p
+            (cm-cut-not-taken-p
+             m
+             (pid input)))
+           (next-st
+            (system-step
+             st
+             input))
+           (next-m
+            (process-cut-step
+             input
+             st
+             m))
+           (remaining-after-cut-inputs
+            (after-cut-inputs
+             next-st
+             next-m
+             (rest inputs))))
+      (if before-cut-p
+          remaining-after-cut-inputs
+        (cons
+         input
+         remaining-after-cut-inputs)))))
+
+(defthm checkpoint-body-inputs-p-implies-first-is-body-input
+  (implies
+   (and
+    (consp inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (cl-checkpoint-body-input-p
+    (first inputs))))
+
+(defthm post-pre-swap-start-p-implies-first-post-cut
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (not
+    (cm-cut-not-taken-p
+     m
+     (pid input-1))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     process-cut-step
+     system-step
+     cm-cut-not-taken-p
+     good-state-p
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     legal-input-sequencep
+     legal-inputp
+     cl-checkpoint-body-inputs-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p
+     cut-markers-in-transit-p)))
+  :rule-classes nil)
+
+(defthm post-pre-swap-start-p-implies-second-pre-cut-at-start
+  (implies
+   (post-pre-swap-start-p
+    st m input-1 input-2)
+   (cm-cut-not-taken-p
+    m
+    (pid input-2)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     process-cut-step
+     system-step
+     cm-cut-not-taken-p
+     good-state-p
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     legal-input-sequencep
+     legal-inputp
+     cl-checkpoint-body-inputs-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p
+     cut-markers-in-transit-p)))
+  :rule-classes nil)
+
+(defthm cm-cut-not-taken-p-implies-memberp-state-proc-ids
+  (implies
+   (and
+    (cm-cut-not-taken-p
+     m i)
+    (good-cut-meta-p
+     m)
+    (cut-meta-imp-consistent-p
+     m st))
+   (memberp
+    i
+    (proc-ids st))))
+
+(defthm good-cut-meta-consistent-implies-initiator-in-state-proc-ids
+  (implies
+   (and
+    (good-cut-meta-p m)
+    (cut-meta-imp-consistent-p
+     m st))
+   (memberp
+    (car
+     (sid m))
+    (proc-ids st))))
+
+(defthm input-sid-equality-implies-pid-in-state-proc-ids
+  (implies
+   (and
+    (good-cut-meta-p m)
+    (cut-meta-imp-consistent-p
+     m st)
+    (equal
+     (list
+      (pid input)
+      counter-value)
+     (sid m)))
+   (memberp
+    (pid input)
+    (proc-ids st))))
+
+(defthm cm-cut-not-taken-p-of-after-cut-input-sequence-update
+  (equal
+   (cm-cut-not-taken-p
+    (s :after-cut-input-sequence
+       value
+       m)
+    i)
+   (cm-cut-not-taken-p
+    m
+    i)))
+
+(defthm process-cut-step-equal-for-equivalent-states
+  (implies
+   (and
+    (state-equivalent-p
+     st-1 st-2)
+    (cut-markers-in-transit-p
+     m st-1)
+    (cut-markers-in-transit-p
+     m st-2)
+    (cut-meta-imp-consistent-p
+     m st-1)
+    (cut-meta-imp-consistent-p
+     m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (legal-inputp st-1 input)
+    (legal-inputp st-2 input)
+    (cl-checkpoint-body-input-p input))
+   (equal
+    (process-cut-step
+     input st-1 m)
+    (process-cut-step
+     input st-2 m)))
+:hints
+(("Goal"
+  :in-theory
+  (disable ;; Keep the large hypotheses opaque.
+    cut-markers-in-transit-p
+    cut-meta-imp-consistent-p
+    good-cut-meta-p
+    good-state-p
+    recovery-free-state-p
+    legal-inputp
+    cl-checkpoint-body-input-p
+    ;; Keep the component relations available as hypotheses.
+    procs-equivalent-p
+    cl-checkpoint-control-equivalent-p
+    ;; Avoid transition-system expansion.
+    system-step
+    cm-cut-not-taken-p
+    get-msg-from-channel))
+ ("Subgoal 1.4"
+ :use
+ ((:instance
+   good-cut-meta-consistent-implies-initiator-in-state-proc-ids
+   (m m)
+   (st st-1))
+  (:instance
+   procs-equivalent-p-implies-nbrs-from-equal
+   (ids
+    (proc-ids st-1))
+   (procs-1
+    (procs st-1))
+   (procs-2
+    (procs st-2))
+   (i
+    (pid input)))))))
+
+(defthm good-cut-meta-p-of-after-cut-input-sequence-update
+  (implies
+   (and
+    (good-cut-meta-p m)
+    (true-listp
+     value))
+   (good-cut-meta-p
+    (s :after-cut-input-sequence
+       value
+       m))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; CROSS-STATE PRESERVATION OF CUT-META CONSISTENCY
+;;
+;; PROCESS-CUT-STEP computed using ST-1 is equal to the one computed
+;; using the equivalent state ST-2. Therefore, the ordinary preservation
+;; theorem for ST-2 establishes consistency with SYSTEM-STEP of ST-2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cut-meta-imp-consistent-p-preserved-by-equivalent-state-step
+  (implies
+   (and
+    (state-equivalent-p
+     st-1 st-2)
+    (cut-markers-in-transit-p
+     m st-1)
+    (cut-markers-in-transit-p
+     m st-2)
+    (cut-meta-imp-consistent-p
+     m st-1)
+    (cut-meta-imp-consistent-p
+     m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (legal-inputp st-1 input)
+    (legal-inputp st-2 input)
+    (cl-checkpoint-body-input-p input))
+   (cut-meta-imp-consistent-p
+    ;; Metadata computed from ST-1.
+    (process-cut-step
+     input st-1 m)
+    ;; Implementation state computed from ST-2.
+    (system-step
+     st-2 input)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable state-equivalent-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-inputp
+      cl-checkpoint-body-input-p
+      process-cut-step
+      system-step))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; CROSS-STATE PRESERVATION OF CUT MARKERS IN TRANSIT
+;;
+;; Again, PROCESS-CUT-STEP is computed from ST-1, while SYSTEM-STEP is
+;; computed from the equivalent state ST-2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cut-markers-in-transit-p-preserved-by-equivalent-state-step
+  (implies
+   (and
+    (state-equivalent-p
+     st-1 st-2)
+    (cut-markers-in-transit-p
+     m st-1)
+    (cut-markers-in-transit-p
+     m st-2)
+    (cut-meta-imp-consistent-p
+     m st-1)
+    (cut-meta-imp-consistent-p
+     m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (legal-inputp st-1 input)
+    (legal-inputp st-2 input)
+    (cl-checkpoint-body-input-p input))
+   (cut-markers-in-transit-p
+    ;; Metadata computed from ST-1.
+    (process-cut-step
+     input st-1 m)
+    ;; Implementation state computed from ST-2.
+    (system-step
+     st-2 input)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable state-equivalent-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-inputp
+      cl-checkpoint-body-input-p
+      process-cut-step
+      system-step))))
+
+(defthm number-of-before-cut-inputs-of-equal-process-cut-steps
+  (implies
+   (and
+    (equal
+     (g :proc-ids st-1)
+     (g :proc-ids st-2))
+    (equal
+     (g :channels st-1)
+     (g :channels st-2))
+    (procs-equivalent-p
+     (g :proc-ids st-1)
+     (g :procs st-1)
+     (g :procs st-2))
+    (cl-checkpoint-control-equivalent-p
+     (g :proc-ids st-1)
+     (g :procs st-1)
+     (g :procs st-2))
+    (cut-markers-in-transit-p m st-1)
+    (cut-markers-in-transit-p m st-2)
+    (cut-meta-imp-consistent-p m st-1)
+    (cut-meta-imp-consistent-p m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (legal-inputp st-1 input)
+    (legal-inputp st-2 input)
+    (cl-checkpoint-body-input-p input))
+   (equal
+    (number-of-before-cut-inputs
+     (system-step st-2 input)
+     (process-cut-step input st-1 m)
+     postfix)
+    (number-of-before-cut-inputs
+     (system-step st-2 input)
+     (process-cut-step input st-2 m)
+     postfix)))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :use
+    (process-cut-step-equal-for-equivalent-states)
+    :in-theory
+    (disable
+     number-of-before-cut-inputs
+     process-cut-step
+     system-step
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-inputp
+     cl-checkpoint-body-input-p))))
+
+(defthm equal-of-plus-one-and-plus-one
+  (implies
+   (and
+    (natp x)
+    (natp y))
+   (equal
+    (equal
+     (+ 1 x)
+     (+ 1 y))
+    (equal x y))))
+
+(defthm natp-of-number-of-before-cut-inputs
+  (natp
+   (number-of-before-cut-inputs
+    st m inputs)))
+
+(defthm number-of-before-cut-inputs-equal-for-equivalent-states
+  (implies
+   (and
+    (state-equivalent-p
+     st-1 st-2)
+    (cut-markers-in-transit-p
+     m st-1)
+    (cut-markers-in-transit-p
+     m st-2)
+    (cut-meta-imp-consistent-p
+     m st-1)
+    (cut-meta-imp-consistent-p
+     m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (true-listp postfix)
+    (legal-input-sequencep
+     st-1 postfix)
+    (legal-input-sequencep
+     st-2 postfix)
+    (cl-checkpoint-body-inputs-p
+     postfix))
+   (equal
+    (number-of-before-cut-inputs
+     st-1 m postfix)
+    (number-of-before-cut-inputs
+     st-2 m postfix)))
+  :hints
+  (("Subgoal *1/3"
+     :use
+ ((:instance
+   checkpoint-body-inputs-p-implies-first-is-body-input
+   (inputs postfix))
+  (:instance
+   number-of-before-cut-inputs-of-equal-process-cut-steps
+   (input
+    (car postfix))
+   (postfix
+    (cdr postfix))))
+    :expand
+    ((number-of-before-cut-inputs
+      st-2
+      m
+      postfix)))
+   ("Subgoal *1/2"
+    :use
+((:instance
+  number-of-before-cut-inputs-of-equal-process-cut-steps
+  (st-1 st-1)
+  (st-2 st-2)
+  (m m)
+  (input
+   (car postfix))
+  (postfix
+   (cdr postfix))))
+ :expand
+ ((number-of-before-cut-inputs
+   st-2
+   m
+   postfix)))
+   ("Goal"
+    :in-theory
+    (disable cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-inputp
+      cl-checkpoint-body-input-p
+      procs-equivalent-p
+      cl-checkpoint-control-equivalent-p
+      system-step
+      process-cut-step
+      cm-cut-not-taken-p
+      CL-CHECKPOINT-BODY-INPUTS-P
+      true-listp
+      get-msg-from-channel))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Now we start proving commutivity of process-cut-step under swap-start condition. This
+;; means, meta-data produced while scanning a (after-before) pair is equal to the meta-data
+;; produced by swapping the pair. We first prove supporting lemmas, then prove lemma.
+;; We prove it under checkpoint-body-input-p of before-after inputs, lets us exclude
+;; one :recover input which is not applicable in our proof scope.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;Support Lemmas Start Here;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm counter-of-other-process-after-normal-system-step
+  (implies
+   (and
+    (equal
+     (g :ttype input)
+     :normal)
+    (not
+     (equal
+      proc-id
+      (g :pid input))))
+   (equal
+    (g :counter
+       (g proc-id
+          (g :procs
+             (system-step st input))))
+    (g :counter
+       (g proc-id
+          (g :procs st))))))
+
+(defthm marker-head-test-of-send-compute-message
+  (equal
+   (equal
+    (msg-type
+     (get-msg-from-channel
+      src
+      dst
+      (send-compute-message
+       local-state
+       i
+       nbrs
+       channels)))
+    :marker)
+   (equal
+    (msg-type
+     (get-msg-from-channel
+      src
+      dst
+      channels))
+    :marker))
+  :hints
+  (("Goal"
+    :induct
+    (send-compute-message
+     local-state
+     i
+     nbrs
+     channels))))
+
+(defthm marker-head-test-unchanged-by-normal-system-step
+  (implies
+   (equal
+    (ttype input-post)
+    :normal)
+   (equal
+    (equal
+     (msg-type
+      (get-msg-from-channel
+       (sender input-pre)
+       (pid input-pre)
+       (channels
+        (system-step st input-post))))
+     :marker)
+    (equal
+     (msg-type
+      (get-msg-from-channel
+       (sender input-pre)
+       (pid input-pre)
+       (channels st)))
+     :marker)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable send-compute-message
+      get-msg-from-channel))))
+
+(defthm marker-get-msg-implies-channel-consp
+  (implies
+   (equal
+    (msg-type
+     (get-msg-from-channel
+      src dst channels))
+    :marker)
+   (consp
+    (channel-state
+     src dst channels))))
+
+(defthm get-msg-from-channel-unchanged-by-normal-system-step-when-marker
+  (implies
+   (and
+    (equal
+     (ttype input-post)
+     :normal)
+    (equal
+     (msg-type
+      (get-msg-from-channel
+       (sender input-pre)
+       (pid input-pre)
+       (channels st)))
+     :marker))
+   (equal
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels
+      (system-step st input-post)))
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels st))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable send-compute-message
+      get-msg-from-channel))))
+
+(defthm get-msg-unchanged-by-normal-receive-at-different-dst
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :receive)
+    (equal
+     (msg-type
+      (current-msg-for-receive
+       input st))
+     :normal)
+    (not
+     (equal
+      dst
+      (pid input))))
+   (equal
+    (get-msg-from-channel
+     src
+     dst
+     (channels
+      (system-step st input)))
+    (get-msg-from-channel
+     src
+     dst
+     (channels st))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+      get-msg-from-channel
+      remove-message-from-channel
+      record-msg-in-snapshots
+      two-imp-inputs-swappable-p
+      post-pre-swap-start-p
+      legal-inputp
+      legal-input-sequencep
+      no-recovery-step-p
+      recovery-free-state-p
+      good-state-p
+      good-cut-meta-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p))))
+
+(defthm swappable-receive-receive-preserves-get-messages
+  (implies
+   (and
+    (two-imp-inputs-swappable-p
+     st input-1 input-2)
+    (equal
+     (ttype input-1)
+     :receive)
+    (equal
+     (ttype input-2)
+     :receive))
+   (and
+    ;; INPUT-2 does not change the channel message seen by INPUT-1.
+    (equal
+     (get-msg-from-channel
+      (sender input-1)
+      (pid input-1)
+      (channels
+       (system-step st input-2)))
+     (get-msg-from-channel
+      (sender input-1)
+      (pid input-1)
+      (channels st)))
+    ;; INPUT-1 does not change the channel message seen by INPUT-2.
+    (equal
+     (get-msg-from-channel
+      (sender input-2)
+      (pid input-2)
+      (channels
+       (system-step st input-1)))
+     (get-msg-from-channel
+      (sender input-2)
+      (pid input-2)
+      (channels st)))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     get-msg-from-channel
+     remove-message-from-channel
+     record-msg-in-snapshots))))
+
+(defthm post-pre-receive-receive-preserves-get-msg
+  (implies
+   (and
+    (post-pre-swap-start-p
+     st m input-1 input-2)
+    (equal
+     (ttype input-1)
+     :receive)
+    (equal
+     (ttype input-2)
+     :receive))
+   (and
+    ;; INPUT-2 does not change the channel message seen by INPUT-1.
+    (equal
+     (get-msg-from-channel
+      (sender input-1)
+      (pid input-1)
+      (channels
+       (system-step st input-2)))
+     (get-msg-from-channel
+      (sender input-1)
+      (pid input-1)
+      (channels st)))
+    ;; INPUT-1 does not change the channel message seen by INPUT-2.
+    (equal
+     (get-msg-from-channel
+      (sender input-2)
+      (pid input-2)
+      (channels
+       (system-step st input-1)))
+     (get-msg-from-channel
+      (sender input-2)
+      (pid input-2)
+      (channels st)))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-two-imp-inputs-swappable-p)
+     (:instance
+       swappable-receive-receive-preserves-get-messages)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Adding an input to either recorded sequence does not modify
+;; CUT-NOT-TAKEN.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cm-cut-not-taken-p-of-cm-add-before-cut-input-sequence
+  (equal
+   (cm-cut-not-taken-p
+    (cm-add-before-cut-input-sequence
+     m input)
+    pid)
+   (cm-cut-not-taken-p
+    m pid)))
+
+(defthm cm-cut-not-taken-p-of-cm-add-after-cut-input-sequence
+  (equal
+   (cm-cut-not-taken-p
+    (cm-add-after-cut-input-sequence
+     m input)
+    pid)
+   (cm-cut-not-taken-p
+    m pid)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Updates to BEFORE-CUT-INPUT-SEQUENCE and AFTER-CUT-INPUT-SEQUENCE
+;; commute because they modify different fields of M.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cm-add-before-and-after-cut-input-sequences-commute
+  (equal
+   (cm-add-before-cut-input-sequence
+    (cm-add-after-cut-input-sequence
+     m input-post)
+    input-pre)
+   (cm-add-after-cut-input-sequence
+    (cm-add-before-cut-input-sequence
+     m input-pre)
+    input-post)))
+
+(defthm sid-of-cm-add-after-cut-input-sequence
+  (equal
+   (g :sid
+      (cm-add-after-cut-input-sequence
+       m input))
+   (g :sid m)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Removing a process from CUT-NOT-TAKEN and changing a waiting-marker
+;; entry cannot introduce another process into CUT-NOT-TAKEN.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm marker-receive-update-does-not-introduce-cut-not-taken
+  (implies
+   (not
+    (cm-cut-not-taken-p
+     m other-pid))
+   (not
+    (cm-cut-not-taken-p
+     (cm-set-waiting-marker-for
+      (cm-remove-cut-not-taken
+       m
+       removed-pid)
+      waiting-pid
+      waiting-for)
+     other-pid))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Adding an AFTER-CUT input commutes with the metadata changes made when
+;; a marker is received: removing a PID from CUT-NOT-TAKEN and updating
+;; that PID's WAITING-MARKER-FROM entry.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm marker-receive-update-commutes-with-add-after-cut-input-sequence
+  (equal
+   (cm-set-waiting-marker-for
+    (cm-remove-cut-not-taken
+     (cm-add-after-cut-input-sequence
+      m
+      input)
+     removed-pid)
+    waiting-pid
+    waiting-for)
+   (cm-add-after-cut-input-sequence
+    (cm-set-waiting-marker-for
+     (cm-remove-cut-not-taken
+      m
+      removed-pid)
+     waiting-pid
+     waiting-for)
+    input)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Updating WAITING-MARKER-FROM after removing a PID cannot introduce
+;; another PID into CUT-NOT-TAKEN.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm waiting-marker-update-after-remove-does-not-introduce-cut-not-taken
+  (implies
+   (not
+    (cm-cut-not-taken-p
+     m other-pid))
+   (not
+    (cm-cut-not-taken-p
+     (s :waiting-marker-from
+        waiting-marker-map
+        (cm-remove-cut-not-taken
+         m removed-pid))
+     other-pid))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; The start-checkpoint WAITING-MARKER-FROM update commutes with adding
+;; an input to AFTER-CUT-INPUT-SEQUENCE.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm start-checkpoint-waiting-update-commutes-with-add-after-cut-input
+  (equal
+   ;; Add the after-cut input first; then remove the checkpointing PID
+   ;; and install its waiting-marker list.
+   (s
+    :waiting-marker-from
+    (s
+     waiting-pid
+     waiting-for
+     (g
+      :waiting-marker-from
+      (cm-remove-cut-not-taken
+       (cm-add-after-cut-input-sequence
+        m input)
+       removed-pid)))
+    (cm-remove-cut-not-taken
+     (cm-add-after-cut-input-sequence
+      m input)
+     removed-pid))
+   ;; Perform the checkpoint metadata update first; then add the
+   ;; after-cut input.
+   (cm-add-after-cut-input-sequence
+    (s
+     :waiting-marker-from
+     (s
+      waiting-pid
+      waiting-for
+      (g
+       :waiting-marker-from
+       (cm-remove-cut-not-taken
+        m removed-pid)))
+     (cm-remove-cut-not-taken
+      m removed-pid))
+    input)))
+
+(defthm add-before-cut-input-commutes-with-after-cut-waiting-update
+  (equal
+   ;; First record INPUT-POST and update its waiting-marker list;
+   ;; then record INPUT-PRE.
+   (cm-add-before-cut-input-sequence
+    (cm-set-waiting-marker-for
+     (cm-add-after-cut-input-sequence
+      m input-post)
+     pid
+     (remove1-equal
+      sender
+      (cm-waiting-marker-for
+       (cm-add-after-cut-input-sequence
+        m input-post)
+       pid)))
+    input-pre)
+   ;; First record INPUT-PRE, then record INPUT-POST and perform
+   ;; the same waiting-marker update.
+   (cm-set-waiting-marker-for
+    (cm-add-after-cut-input-sequence
+     (cm-add-before-cut-input-sequence
+      m input-pre)
+     input-post)
+    pid
+    (remove1-equal
+     sender
+     (cm-waiting-marker-for
+      (cm-add-after-cut-input-sequence
+       (cm-add-before-cut-input-sequence
+        m input-pre)
+       input-post)
+      pid)))))
+
+(defthm sid-of-cm-add-before-cut-input-sequence
+  (equal
+   (g :sid
+      (cm-add-before-cut-input-sequence
+       m input))
+   (g :sid m)))
+
+(defthm cm-cut-not-taken-p-of-cm-set-waiting-marker-for
+  (equal
+   (cm-cut-not-taken-p
+    (cm-set-waiting-marker-for
+     m
+     waiting-pid
+     waiting-for)
+    queried-pid)
+   (cm-cut-not-taken-p
+    m
+    queried-pid)))
+
+(defthm cm-remove-cut-not-taken-does-not-introduce-membership
+  (implies
+   (not
+    (cm-cut-not-taken-p
+     m queried-pid))
+   (not
+    (cm-cut-not-taken-p
+     (cm-remove-cut-not-taken
+      m removed-pid)
+     queried-pid))))
+
+(defthm post-get-msg-unchanged-in-receive-receive-post-pre-case
+  (implies
+   (and
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st
+     (list input-post input-pre))
+    (equal (ttype input-post) :receive)
+    (equal (ttype input-pre) :receive)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre))
+    (not
+     (equal
+      (msg-type
+       (get-msg-from-channel
+        (sender input-post)
+        (pid input-post)
+        (channels st)))
+      :marker)))
+   (equal
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels
+      (system-step st input-pre)))
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels st))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-receive-receive-preserves-get-msg
+      (input-1 input-post)
+      (input-2 input-pre)))
+    :in-theory
+    (disable
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-input-sequencep
+     get-msg-from-channel
+     system-step))))
+
+(defthm pre-get-msg-unchanged-in-receive-receive-post-pre-case
+  (implies
+   (and
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st
+     (list input-post input-pre))
+    (equal (ttype input-post) :receive)
+    (equal (ttype input-pre) :receive)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre))
+    (not
+     (equal
+      (msg-type
+       (get-msg-from-channel
+        (sender input-post)
+        (pid input-post)
+        (channels st)))
+      :marker)))
+   (equal
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels
+      (system-step st input-post)))
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels st))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-receive-receive-preserves-get-msg
+      (input-1 input-post)
+      (input-2 input-pre)))
+    :in-theory
+    (disable
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-input-sequencep
+     get-msg-from-channel
+     system-step))))
+
+(defthm post-get-msg-unchanged-under-post-pre-swap-start
+  (implies
+   (and
+    (post-pre-swap-start-p
+     st m input-post input-pre)
+    (equal (ttype input-post) :receive)
+    (equal (ttype input-pre) :receive))
+   (equal
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels
+      (system-step st input-pre)))
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels st))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-receive-receive-preserves-get-msg
+      (input-1 input-post)
+      (input-2 input-pre)))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     post-pre-receive-receive-preserves-get-msg
+     get-msg-from-channel
+     system-step))))
+
+(defthm pre-get-msg-unchanged-under-post-pre-swap-start
+  (implies
+   (and
+    (post-pre-swap-start-p
+     st m input-post input-pre)
+    (equal (ttype input-post) :receive)
+    (equal (ttype input-pre) :receive))
+   (equal
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels
+      (system-step st input-post)))
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels st))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      post-pre-receive-receive-preserves-get-msg
+      (input-1 input-post)
+      (input-2 input-pre)))
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     post-pre-receive-receive-preserves-get-msg
+     get-msg-from-channel
+     system-step))))
+
+(defthm post-target-marker-type-preserved-after-pre-receive
+  (implies
+   (and
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st
+     (list input-post input-pre))
+    (equal
+     (ttype input-post)
+     :receive)
+    (equal
+     (ttype input-pre)
+     :receive)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre))
+    (equal
+     (msg-type
+      (get-msg-from-channel
+       (sender input-post)
+       (pid input-post)
+       (channels st)))
+     :marker)
+    (equal
+     (sid
+      (get-msg-from-channel
+       (sender input-post)
+       (pid input-post)
+       (channels st)))
+     (sid m)))
+   ;; It must still see a marker after moving INPUT-PRE first.
+   (equal
+    (msg-type
+     (get-msg-from-channel
+      (sender input-post)
+      (pid input-post)
+      (channels
+       (system-step st input-pre))))
+    :marker))
+  :hints
+  (("Goal"
+    :use
+    (post-pre-receive-receive-preserves-get-msg)
+    :in-theory
+    (disable
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-input-sequencep
+     get-msg-from-channel
+     system-step)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+(defthm post-target-marker-sid-preserved-after-pre-receive
+  (implies
+   (and
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st
+     (list input-post input-pre))
+    (equal
+     (ttype input-post)
+     :receive)
+    (equal
+     (ttype input-pre)
+     :receive)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre))
+    (equal
+     (msg-type
+      (get-msg-from-channel
+       (sender input-post)
+       (pid input-post)
+       (channels st)))
+     :marker)
+    (equal
+     (sid
+      (get-msg-from-channel
+       (sender input-post)
+       (pid input-post)
+       (channels st)))
+     (sid m)))
+   ;; Its SID must remain the target SID after INPUT-PRE.
+   (equal
+    (sid
+     (get-msg-from-channel
+      (sender input-post)
+      (pid input-post)
+      (channels
+       (system-step st input-pre))))
+    (sid m)))
+  :hints
+  (("Goal"
+    :use
+    (post-pre-receive-receive-preserves-get-msg)
+    :in-theory
+    (disable
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-input-sequencep
+     get-msg-from-channel
+     system-step)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+(defthm pre-get-msg-unchanged-when-post-sees-target-marker
+  (implies
+   (and
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st
+     (list input-post input-pre))
+    (equal (ttype input-post) :receive)
+    (equal (ttype input-pre) :receive)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre))
+    (equal
+     (msg-type
+      (get-msg-from-channel
+       (sender input-post)
+       (pid input-post)
+       (channels st)))
+     :marker)
+    (equal
+     (sid
+      (get-msg-from-channel
+       (sender input-post)
+       (pid input-post)
+       (channels st)))
+     (sid m)))
+   (equal
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels
+      (system-step st input-post)))
+    (get-msg-from-channel
+     (sender input-pre)
+     (pid input-pre)
+     (channels st))))
+  :hints
+  (("Goal"
+    :use
+    (post-pre-receive-receive-preserves-get-msg)
+    :in-theory
+    (disable
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-input-sequencep
+     get-msg-from-channel
+     system-step)))
+  :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+(defthm post-pre-cut-status-implies-pids-different
+  (implies
+   (and
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre)))
+   (not
+    (equal
+     (pid input-post)
+     (pid input-pre))))
+  :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+(defthm cm-post-pre-target-marker-updates-commute
+  (let*
+      (;; Metadata after recording both inputs in their global
+       ;; before/after sequences.
+       (base
+        (cm-add-after-cut-input-sequence
+         (cm-add-before-cut-input-sequence
+          m input-pre)
+         input-post))
+       ;; Waiting-marker update performed by INPUT-POST.
+       (post-waiting
+        (remove1-equal
+         sender-post
+         (cm-waiting-marker-for
+          base
+          post-pid)))
+       ;; Waiting-marker list installed when INPUT-PRE takes the cut.
+       (pre-waiting
+        (remove1-equal
+         sender-pre
+         pre-nbrs-from))
+       ;; Metadata obtained by processing INPUT-PRE first.
+       (after-pre
+        (cm-set-waiting-marker-for
+         (cm-remove-cut-not-taken
+          (cm-add-before-cut-input-sequence
+           m input-pre)
+          pre-pid)
+         pre-pid
+         pre-waiting))
+       ;; Then record INPUT-POST as an after-cut input.
+       (after-pre-post-sequence
+        (cm-add-after-cut-input-sequence
+         after-pre
+         input-post)))
+    (implies
+     (not
+      (equal post-pid pre-pid))
+     (equal
+      ;; INPUT-POST marker update followed by INPUT-PRE cut update.
+      (cm-set-waiting-marker-for
+       (cm-remove-cut-not-taken
+        (cm-set-waiting-marker-for
+         base
+         post-pid
+         post-waiting)
+        pre-pid)
+       pre-pid
+       pre-waiting)
+      ;; INPUT-PRE cut update followed by INPUT-POST marker update.
+      (cm-set-waiting-marker-for
+       after-pre-post-sequence
+       post-pid
+       (remove1-equal
+        sender-post
+        (cm-waiting-marker-for
+         after-pre-post-sequence
+         post-pid)))))))
+
+(defthm sid-of-cm-set-waiting-marker-for
+  (equal
+   (g :sid
+      (cm-set-waiting-marker-for
+       m i xs))
+   (g :sid m)))
+
+(defthm sid-of-cm-remove-cut-not-taken
+  (equal
+   (g :sid
+      (cm-remove-cut-not-taken
+       m i))
+   (g :sid m)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Corrected hints.
+;;
+;; Do not put CHANNEL-STATE in a theory expression: it is a macro, not an
+;; ACL2 rule name.  SYSTEM-STEP and GET-MSG-FROM-CHANNEL are disabled in the
+;; wrapper proof so the general start-checkpoint preservation lemma can match
+;; before those functions are expanded.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm get-msg-from-channel-after-start-checkpoint-when-consp
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :start-checkpoint)
+    (consp
+     (channel-state
+      src
+      dst
+      (channels st))))
+   (equal
+    (get-msg-from-channel
+     src
+     dst
+     (channels
+      (system-step st input)))
+    (get-msg-from-channel
+     src
+     dst
+     (channels st))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     send-msg-all-outgoing-channels
+     get-msg-from-channel
+     start-checkpoint-helper
+     create-marker-message))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; LEGAL-INPUT-SEQUENCEP may expand to establish legality of INPUT-POST.
+;; LEGAL-INPUTP must expand to expose the receive-channel CONSP fact.
+;; SYSTEM-STEP must expand to expose STEP-CHECKPOINT and its marker broadcast.
+;;
+;; Only keep GET-MSG-FROM-CHANNEL and SEND-MSG-ALL-OUTGOING-CHANNELS
+;; unexpanded so the existing head-preservation theorem can match.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm post-receive-get-msg-unchanged-by-pre-start-checkpoint
+  (implies
+   (and
+    (legal-input-sequencep
+     st
+     (list input-post input-pre))
+    (equal
+     (ttype input-post)
+     :receive)
+    (equal
+     (ttype input-pre)
+     :start-checkpoint))
+   (equal
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels
+      (system-step st input-pre)))
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels st))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     get-msg-from-channel
+     send-msg-all-outgoing-channels))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A RECEIVE step updates only the receiving process, PID(INPUT).
+;; Therefore, the counter of every different process is unchanged.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm counter-of-other-process-after-receive-system-step
+  (implies
+   (and
+    (equal
+     (ttype input)
+     :receive)
+    (not
+     (equal
+      proc-id
+      (pid input))))
+   (equal
+    (counter
+     (g proc-id
+        (procs
+         (system-step st input))))
+    (counter
+     (g proc-id
+        (procs st)))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     get-msg-from-channel
+     remove-message-from-channel
+     send-msg-all-outgoing-channels
+     record-msg-in-snapshots
+     replay-msgs-on-channel
+     replay-channel-snapshots))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Reversed orientation needed by
+;; COUNTER-OF-OTHER-PROCESS-AFTER-RECEIVE-SYSTEM-STEP.
+;;
+;; The counter theorem instantiates:
+;;
+;;   PROC-ID    = PID(INPUT-PRE)
+;;   PID(INPUT) = PID(INPUT-POST)
+;;
+;; so its backchain hypothesis is PRE != POST, not POST != PRE.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm post-pre-cut-status-implies-reversed-pids-different
+  (implies
+   (and
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre)))
+   (not
+    (equal
+     (pid input-pre)
+     (pid input-post))))
+  :hints
+  (("Goal"
+    :cases
+    ((equal
+      (pid input-post)
+      (pid input-pre)))))
+  :rule-classes
+  ((:rewrite
+    :match-free :all)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A post-cut marker receive at POST-PID commutes with the metadata update
+;; made when the different process PRE-PID starts/takes the target cut.
+;;
+;; The lemma deliberately uses the raw S form for the PRE-PID waiting-marker
+;; update because PROCESS-CUT-STEP has already expanded that update into S in
+;; Subgoal 28.2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cm-post-marker-update-commutes-with-pre-start-cut-update
+  (let*
+      (;; Record INPUT-PRE in the global before-cut sequence and INPUT-POST
+       ;; in the global after-cut sequence.
+       (base
+        (cm-add-after-cut-input-sequence
+         (cm-add-before-cut-input-sequence
+          m input-pre)
+         input-post))
+       ;; Waiting-marker list after INPUT-POST receives its marker.
+       (post-waiting
+        (remove1-equal
+         post-sender
+         (cm-waiting-marker-for
+          base
+          post-pid)))
+       ;; Metadata after the POST-PID waiting-marker update.
+       (after-post-marker
+        (cm-set-waiting-marker-for
+         base
+         post-pid
+         post-waiting))
+       ;; Then remove PRE-PID from CUT-NOT-TAKEN.
+       (left-before-pre-waiting
+        (cm-remove-cut-not-taken
+         after-post-marker
+         pre-pid))
+       ;; Metadata obtained by first recording INPUT-PRE and removing
+       ;; PRE-PID from CUT-NOT-TAKEN.
+       (right-before-pre-waiting
+        (cm-remove-cut-not-taken
+         (cm-add-before-cut-input-sequence
+          m input-pre)
+         pre-pid))
+       ;; Raw form of installing PRE-PID's initial waiting-marker list.
+       (after-pre-start
+        (s :waiting-marker-from
+           (s pre-pid
+              pre-waiting
+              (g :waiting-marker-from
+                 right-before-pre-waiting))
+           right-before-pre-waiting))
+       ;; Then record INPUT-POST in the global after-cut sequence.
+       (after-pre-start-post-sequence
+        (cm-add-after-cut-input-sequence
+         after-pre-start
+         input-post)))
+    (implies
+     (not
+      (equal post-pid pre-pid))
+     (equal
+      ;; POST marker update first, followed by PRE start-cut update.
+      (s :waiting-marker-from
+         (s pre-pid
+            pre-waiting
+            (g :waiting-marker-from
+               left-before-pre-waiting))
+         left-before-pre-waiting)
+      ;; PRE start-cut update first, followed by POST marker update.
+      (cm-set-waiting-marker-for
+       after-pre-start-post-sequence
+       post-pid
+       (remove1-equal
+        post-sender
+        (cm-waiting-marker-for
+         after-pre-start-post-sequence
+         post-pid))))))
+  ;; Splitting explicitly on the PID equality helps the records library
+  ;; normalize the two updates at distinct keys.
+  :hints
+  (("Goal"
+    :cases
+    ((equal post-pid pre-pid)))))
+
+;; Adding a before-cut input commutes with the metadata update performed
+;; when a process starts its checkpoint:
+;;
+;;   1. remove REMOVED-PID from CUT-NOT-TAKEN;
+;;   2. install WAITING-FOR at WAITING-PID.
+;;
+;; The operations modify independent fields.
+
+(defthm start-checkpoint-waiting-update-commutes-with-add-before-cut-input
+  (equal
+   (s
+    :waiting-marker-from
+    (s
+     waiting-pid
+     waiting-for
+     (g
+      :waiting-marker-from
+      (cm-remove-cut-not-taken
+       (cm-add-before-cut-input-sequence m input)
+       removed-pid)))
+    (cm-remove-cut-not-taken
+     (cm-add-before-cut-input-sequence m input)
+     removed-pid))
+   (cm-add-before-cut-input-sequence
+    (s
+     :waiting-marker-from
+     (s
+      waiting-pid
+      waiting-for
+      (g
+       :waiting-marker-from
+       (cm-remove-cut-not-taken
+        m
+        removed-pid)))
+     (cm-remove-cut-not-taken
+      m
+      removed-pid))
+    input)))
+
+(defthm remove1-equal-distinct-commute
+  (implies
+   (not (equal x y))
+   (equal
+    (remove1-equal
+     x
+     (remove1-equal y xs))
+    (remove1-equal
+     y
+     (remove1-equal x xs))))
+  ;; This induction branches when X is the first element.
+  ;; The simplifier handles the corresponding Y case.
+  :hints
+  (("Goal"
+    :induct
+    (remove1-equal x xs))))
+
+(defthm start-checkpoint-update-commutes-with-before-cut-marker-receive-update
+  (let*
+      (;; Metadata update performed when INPUT-POST starts its checkpoint.
+       (post-update
+        (s
+         :waiting-marker-from
+         (s
+          post-pid
+          post-waiting
+          (g
+           :waiting-marker-from
+           (cm-remove-cut-not-taken
+            m
+            post-pid)))
+         (cm-remove-cut-not-taken
+          m
+          post-pid)))
+       ;; Original order:
+       ;; POST starts its checkpoint, then PRE is recorded and
+       ;; processes its target marker.
+       (pre-after-post
+        (cm-set-waiting-marker-for
+         (cm-remove-cut-not-taken
+          (cm-add-before-cut-input-sequence
+           post-update
+           input-pre)
+          pre-pid)
+         pre-pid
+         pre-waiting))
+       ;; Swapped order:
+       ;; PRE is recorded and processes its target marker first.
+       (pre-update
+        (cm-set-waiting-marker-for
+         (cm-remove-cut-not-taken
+          (cm-add-before-cut-input-sequence
+           m
+           input-pre)
+          pre-pid)
+         pre-pid
+         pre-waiting))
+       ;; INPUT-POST then starts its checkpoint.
+       ;; Keep this in the raw S form occurring in the checkpoint.
+       (post-after-pre
+        (s
+         :waiting-marker-from
+         (s
+          post-pid
+          post-waiting
+          (g
+           :waiting-marker-from
+           (cm-remove-cut-not-taken
+            pre-update
+            post-pid)))
+         (cm-remove-cut-not-taken
+          pre-update
+          post-pid))))
+    (implies
+     (and
+      (not
+       (cm-cut-not-taken-p
+        m
+        post-pid))
+      (cm-cut-not-taken-p
+       m
+       pre-pid))
+     (equal
+      pre-after-post
+      post-after-pre)))
+  ;; The equal-PID case contradicts the two cut-status hypotheses.
+  ;; In the different-PID case, the record updates commute.
+  :hints
+  (("Goal"
+    :cases
+    ((equal post-pid pre-pid)))))
+
+;; If process I has already taken the target cut, its current
+;; (PID, COUNTER) pair cannot equal the target SID.
+;;
+;; CUT-META-IMP-INITIATOR-CONSISTENT-P requires:
+;;
+;;   target-counter < current-counter
+;;
+;; once the target initiator has taken its cut.
+
+(defthm cut-meta-consistency-cut-taken-implies-current-sid-not-target
+  (implies
+   (and
+    (cut-meta-imp-consistent-p
+     m
+     st)
+    (not
+     (cm-cut-not-taken-p
+      m
+      i)))
+   (not
+    (equal
+     (list
+      i
+      (counter
+       (g i (procs st))))
+     (cm-sid m))))
+  :hints
+  (("Goal"
+    :cases
+    ((equal
+      (list
+       i
+       (counter
+        (g i (procs st))))
+      (cm-sid m)))
+    :in-theory
+    (disable
+     cut-meta-imp-procs-consistent-p))))
+
+;; Complete counter behavior of a START-CHECKPOINT step:
+;;
+;;   - the initiating process increments its counter;
+;;   - every other process keeps its counter unchanged.
+;;
+;; Using an IF avoids a free-variable side condition when this rule fires.
+
+(defthm counter-after-start-checkpoint-system-step
+  (implies
+   (equal
+    (ttype input)
+    :start-checkpoint)
+   (equal
+    (counter
+     (g proc-id
+        (procs
+         (system-step st input))))
+    (if
+     (equal
+      proc-id
+      (pid input))
+     (+ 1
+        (counter
+         (g proc-id
+            (procs st))))
+     (counter
+      (g proc-id
+         (procs st))))))
+  :hints
+  (("Goal"
+    :cases
+    ((equal
+      proc-id
+      (pid input))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;Support Lemmas End Here;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; PROCESS-CUT-STEP COMMUTES FOR ONE POST-CUT / BEFORE-CUT SWAP
+;;
+;; Original order:
+;;
+;;     INPUT-POST, INPUT-PRE
+;;
+;; Swapped order:
+;;
+;;     INPUT-PRE, INPUT-POST
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm post-pre-two-process-cut-steps-commute
+    (implies
+     (and
+      (post-pre-swap-start-p
+       st
+       m
+       input-post
+       input-pre)
+      (cl-checkpoint-body-input-p input-post)
+      (cl-checkpoint-body-input-p input-pre))
+   (equal
+    ;; Metadata after the original POST/PRE order.
+    (process-cut-step
+     input-pre
+     (system-step
+      st
+      input-post)
+     (process-cut-step
+      input-post
+      st
+      m))
+    ;; Metadata after the swapped PRE/POST order.
+    (process-cut-step
+     input-post
+     (system-step
+      st
+      input-pre)
+     (process-cut-step
+      input-pre
+      st
+      m))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     system-step
+     cm-cut-not-taken
+     good-state-p
+     good-cut-meta-p
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     recovery-free-state-p
+     get-msg-from-channel
+     remove-message-from-channel
+     legal-input-sequencep
+     legal-inputp
+     cm-cut-not-taken-p
+     cm-remove-cut-not-taken
+     cm-waiting-marker-for
+     cm-set-waiting-marker-for
+     cm-remove-cut-not-taken
+     cm-add-after-cut-input-sequence
+     cm-add-before-cut-input-sequence
+     cm-after-cut-input-sequence
+     cm-before-cut-input-sequence
+     cm-waiting-marker-from))))
+
+(defthm number-of-before-cut-inputs-after-post-pre-pair-commutes
+  (let* (;; Original order: POST, PRE.
+         (st-after-post
+          (system-step st input-post))
+         (m-after-post
+          (process-cut-step
+           input-post st m))
+         (st-after-post-pre
+          (system-step
+           st-after-post
+           input-pre))
+         (m-after-post-pre
+          (process-cut-step
+           input-pre
+           st-after-post
+           m-after-post))
+         ;; Swapped order: PRE, POST.
+         (st-after-pre
+          (system-step st input-pre))
+         (m-after-pre
+          (process-cut-step
+           input-pre st m))
+         (st-after-pre-post
+          (system-step
+           st-after-pre
+           input-post))
+         (m-after-pre-post
+          (process-cut-step
+           input-post
+           st-after-pre
+           m-after-pre)))
+    (implies
+     (and
+      (post-pre-swap-start-p
+       st m input-post input-pre)
+      (true-listp postfix)
+      (legal-input-sequencep
+       st
+       (append
+        (list input-post input-pre)
+        postfix))
+      (cl-checkpoint-body-inputs-p
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (equal
+      ;; Suffix count after PRE, POST.
+      (number-of-before-cut-inputs
+       st-after-pre-post
+       m-after-pre-post
+       postfix)
+      ;; Suffix count after POST, PRE.
+      (number-of-before-cut-inputs
+       st-after-post-pre
+       m-after-post-pre
+       postfix))))
+    :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; ---------------------------------------------------------
+     ;; The two pair executions produce equivalent states.
+     ;; ---------------------------------------------------------
+     (:instance
+      front-post-pre-swap-start-implies-state-equivalent
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; ---------------------------------------------------------
+     ;; The two pair executions produce exactly equal metadata.
+     ;; ---------------------------------------------------------
+     (:instance
+      post-pre-two-process-cut-steps-commute
+      (st st)
+      (m m)
+      (input-post input-post)
+      (input-pre input-pre))
+     ;; ---------------------------------------------------------
+     ;; Both pair-result states are good and recovery-free.
+     ;; ---------------------------------------------------------
+     (:instance
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      (st st)
+      (m m)
+      (input-1 input-post)
+      (input-2 input-pre))
+     ;; ---------------------------------------------------------
+     ;; The swapped two-input prefix is legal.
+     ;; ---------------------------------------------------------
+     (:instance
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; ---------------------------------------------------------
+     ;; POSTFIX is legal after the original pair.
+     ;; ---------------------------------------------------------
+     (:instance
+      legal-input-sequencep-of-append-implies-second
+      (st st)
+      (inputs-1
+       (list input-post input-pre))
+      (inputs-2 postfix))
+     ;; ---------------------------------------------------------
+     ;; POSTFIX is also legal after the swapped pair.
+     ;; ---------------------------------------------------------
+     (:instance
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      (st st)
+      (m m)
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     ;; ---------------------------------------------------------
+     ;; Extract the checkpoint-body property of POSTFIX.
+     ;; Apply the REST projection twice.
+     ;; ---------------------------------------------------------
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (rest
+        (append
+         (list input-post input-pre)
+         postfix))))
+     ;; ---------------------------------------------------------
+     ;; Invariants after the original POST/PRE pair.
+     ;; ---------------------------------------------------------
+     (:instance
+      good-cut-meta-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; ---------------------------------------------------------
+     ;; Invariants after the swapped PRE/POST pair.
+     ;; Its metadata is subsequently identified with the original
+     ;; metadata by the exact cut-step commutation theorem.
+     ;; ---------------------------------------------------------
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-pre input-post)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-pre input-post)))
+     ;; ---------------------------------------------------------
+     ;; Apply the previously proved count-equivalence theorem.
+     ;;
+     ;; Use the original-order pair metadata as the common M.
+     ;; Exact metadata commutation replaces the swapped metadata
+     ;; in the target by this same value.
+     ;; ---------------------------------------------------------
+     (:instance
+      number-of-before-cut-inputs-equal-for-equivalent-states
+      (st-1
+       (run-imp
+        st
+        (list input-post input-pre)))
+      (st-2
+       (run-imp
+        st
+        (list input-pre input-post)))
+      (m
+       (process-cut-segment
+        (list input-post input-pre)
+        st
+        m))
+      (postfix postfix)))
+    :in-theory
+    (disable ;; Keep all semantic predicates and recursive counting opaque.
+      number-of-before-cut-inputs
+      state-equivalent-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-input-sequencep
+      legal-inputp
+      cl-checkpoint-body-inputs-p
+      cl-checkpoint-body-input-p
+      process-cut-step
+      system-step
+      cm-cut-not-taken-p
+      true-listp
+      ;; These are supplied explicitly above.
+      number-of-before-cut-inputs-equal-for-equivalent-states
+      post-pre-two-process-cut-steps-commute
+      front-post-pre-swap-start-implies-state-equivalent
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      legal-input-sequencep-of-append-implies-second
+      checkpoint-body-inputs-p-implies-rest
+      good-cut-meta-p-over-process-cut-segment
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      cut-markers-in-transit-p-preserved-by-segment))))
+
+;; Projection from POST-PRE-SWAP-START-P needed when expanding
+;; NUMBER-OF-BEFORE-CUT-INPUTS in the original POST/PRE order.
+(defthm post-pre-swap-start-p-implies-second-pre-cut-after-first
+  (implies
+   (post-pre-swap-start-p
+    st m input-post input-pre)
+   (cm-cut-not-taken-p
+    (process-cut-step
+     input-post st m)
+    (pid input-pre)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable process-cut-step
+      cm-cut-not-taken-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-input-sequencep
+      cl-checkpoint-body-input-p)))
+  :rule-classes nil)
+
+(defthm number-of-before-cut-inputs-of-swap-first-after-before
+  (implies
+   (and
+    (true-listp inputs)
+    (cut-markers-in-transit-p
+     m st)
+    (cut-meta-imp-consistent-p
+     m st)
+    (good-cut-meta-p
+     m)
+    (good-state-p
+     st)
+    (recovery-free-state-p
+     st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (equal
+    (number-of-before-cut-inputs
+     st
+     m
+     (swap-first-after-before
+      st m inputs))
+    (number-of-before-cut-inputs
+     st m inputs)))
+  :hints
+  (("Goal"
+    :induct
+    (swap-first-after-before
+     st m inputs)
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     process-cut-step
+     system-step
+     cm-cut-not-taken-p
+     good-state-p
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     legal-input-sequencep
+     legal-inputp
+     cl-checkpoint-body-inputs-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p
+     cut-markers-in-transit-p))
+   ("Subgoal *1/2.2"
+    :use
+    ((:instance
+      post-pre-swap-start-p-implies-second-pre-cut-at-start
+      (input-1 (first inputs))
+      (input-2 (second inputs)))))
+   ("Subgoal *1/2.4'"
+    :use
+    ((:instance
+      post-pre-swap-start-p-implies-first-post-cut
+      (input-1
+       (first inputs))
+      (input-2
+       (second inputs)))))
+   ("Subgoal *1/2.1"
+    :use
+    ((:instance
+      post-pre-swap-start-p-implies-second-pre-cut-at-start
+      (input-1
+       (first inputs))
+      (input-2
+       (second inputs)))))
+  ("Subgoal *1/2.3'"
+ :use
+ ((:instance
+   post-pre-swap-start-p-implies-first-post-cut
+   (st st)
+   (m m)
+   (input-1
+    (car inputs))
+   (input-2
+    (cadr inputs)))
+  (:instance
+   post-pre-swap-start-p-implies-second-pre-cut-after-first
+   (st st)
+   (m m)
+   (input-post
+    (car inputs))
+   (input-pre
+    (cadr inputs)))
+  (:instance
+   number-of-before-cut-inputs-after-post-pre-pair-commutes
+   (st st)
+   (m m)
+   (input-post
+    (car inputs))
+   (input-pre
+    (cadr inputs))
+   (postfix
+    (cddr inputs))))
+ ;; First expansion handles INPUT-POST.
+ ;; Second expansion handles INPUT-PRE.
+ :expand
+ ((number-of-before-cut-inputs
+   st
+   m
+   inputs)
+  (number-of-before-cut-inputs
+   (system-step
+    st
+    (car inputs))
+   (process-cut-step
+    (car inputs)
+    st
+    m)
+   (cdr inputs))))))
+
+;; ------------------------------------------------------------
+;; If the first input is POST and some PRE input remains, then
+;; the first POST contributes at least one inversion.
+;;
+;; Only the top calls are expanded. Recursive suffix calls remain
+;; opaque, preventing case explosion.
+;; ------------------------------------------------------------
+
+(defthm first-after-with-positive-before-count-has-positive-inversion-count
+  (implies
+   (and
+    (consp inputs)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid (first inputs))))
+    (< 0
+       (number-of-before-cut-inputs
+        st m inputs)))
+   (< 0
+      (inversion-count
+       st m inputs)))
+  :hints
+  (("Goal"
+    :do-not-induct t
+    ;; The suffix inversion count is nonnegative.
+    :use
+    ((:instance
+      natp-of-inversion-count
+      (st
+       (system-step st (first inputs)))
+      (m
+       (process-cut-step
+        (first inputs)
+        st
+        m))
+      (inputs
+       (rest inputs))))
+    ;; Expand exactly one recursion level.
+    :expand
+    ((inversion-count st m inputs)
+     (number-of-before-cut-inputs
+      st m inputs))
+    :in-theory
+    (disable
+     ;; Critical: keep the recursive suffix calls closed.
+     inversion-count
+     number-of-before-cut-inputs
+     system-step
+     process-cut-step
+     cm-cut-not-taken-p))))
+
+(defthm zero-inversion-count-and-positive-before-count-implies-first-before
+  (implies
+   (and
+    (consp inputs)
+    (equal
+     (inversion-count st m inputs)
+     0)
+    (< 0
+       (number-of-before-cut-inputs
+        st m inputs)))
+   (cm-cut-not-taken-p
+    m
+    (pid (first inputs))))
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    ((:instance
+      first-after-with-positive-before-count-has-positive-inversion-count))
+    :in-theory
+    (disable
+     first-after-with-positive-before-count-has-positive-inversion-count
+     inversion-count
+     number-of-before-cut-inputs
+     system-step
+     process-cut-step
+     cm-cut-not-taken-p))))
+
+;; ------------------------------------------------------------
+;; A dynamically classified adjacent POST/PRE pair is swappable.
+;;
+;; The surrounding sequence supplies:
+;;   - legality of the two inputs in their execution states;
+;;   - checkpoint-body classification of both inputs.
+;;
+;; The remaining hypotheses are exactly the invariant and
+;; classification fields of POST-PRE-SWAP-START-P.
+;; ------------------------------------------------------------
+
+(defthm fixed-post-pre-inversion-is-swappable
+  (implies
+   (and
+    (consp inputs)
+    (consp (rest inputs))
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep st inputs)
+    (cl-checkpoint-body-inputs-p inputs)
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid (first inputs))))
+    (cm-cut-not-taken-p
+     (process-cut-step
+      (first inputs)
+      st
+      m)
+     (pid (second inputs))))
+   (post-pre-swap-start-p
+    st
+    m
+    (first inputs)
+    (second inputs)))
+  :hints
+  (("Goal"
+    :use
+    (;; Legality of the first input.
+     (:instance
+      legal-input-sequencep-implies-first-legal
+      (inputs inputs))
+     ;; Legality of the remaining sequence after the first input.
+     (:instance
+      legal-input-sequencep-implies-rest-legal
+      (inputs inputs))
+     ;; Legality of the second input in the state after the first.
+     (:instance
+      legal-input-sequencep-implies-first-legal
+      (st
+       (system-step st (first inputs)))
+      (inputs
+       (rest inputs)))
+     ;; Body-input property of the first input.
+     (:instance
+      checkpoint-body-inputs-p-implies-first-is-body-input
+      (inputs inputs))
+     ;; Body-input property of the remaining sequence.
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs inputs))
+     ;; Body-input property of the second input.
+     (:instance
+      checkpoint-body-inputs-p-implies-first-is-body-input
+      (inputs
+       (rest inputs))))
+    :in-theory
+    (disable system-step
+      process-cut-step
+      cm-cut-not-taken-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-inputp
+      cl-checkpoint-body-input-p
+      cl-checkpoint-body-inputs-p)))
+  :rule-classes nil)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ONCE POST-CUT, ALWAYS POST-CUT
+;;
+;; PROCESS-CUT-STEP can remove a process from CUT-NOT-TAKEN, but it
+;; cannot add a process back. This is the contrapositive form of
+;; CM-CUT-NOT-TAKEN-P-AFTER-PROCESS-CUT-STEP-IMPLIES-BEFORE.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm post-cut-remains-post-after-process-cut-step
+  (implies
+   (not
+    (cm-cut-not-taken-p
+     m i))
+   (not
+    (cm-cut-not-taken-p
+     (process-cut-step input st m)
+     i)))
+  :hints
+  (("Goal"
+    :use
+    (cm-cut-not-taken-p-after-process-cut-step-implies-before))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; COMPLETE CUT CLASSIFICATION OF A POST/PRE SWAP
+;;
+;; If INPUT-POST and INPUT-PRE satisfy the swap-start condition, then:
+;;
+;;   1. INPUT-POST is initially post-cut.
+;;   2. INPUT-PRE is pre-cut after INPUT-POST.
+;;   3. INPUT-PRE was already pre-cut before INPUT-POST.
+;;   4. INPUT-POST remains post-cut after INPUT-PRE.
+;;
+;; These four facts eliminate every impossible classification branch
+;; generated while expanding INVERSION-COUNT.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm post-pre-swap-start-p-implies-complete-cut-classification
+  (implies
+   (post-pre-swap-start-p
+    st
+    m
+    input-post
+    input-pre)
+   (and
+    ;; INPUT-POST is initially post-cut.
+    (not
+     (cm-cut-not-taken-p
+      m
+      (pid input-post)))
+    ;; INPUT-PRE is pre-cut immediately before it executes in
+    ;; the original POST/PRE order.
+    (cm-cut-not-taken-p
+     (process-cut-step
+      input-post
+      st
+      m)
+     (pid input-pre))
+    ;; Since PROCESS-CUT-STEP cannot introduce pre-cut membership,
+    ;; INPUT-PRE was already pre-cut in M.
+    (cm-cut-not-taken-p
+     m
+     (pid input-pre))
+    ;; Processing INPUT-PRE first cannot make INPUT-POST pre-cut again.
+    (not
+     (cm-cut-not-taken-p
+      (process-cut-step
+       input-pre
+       st
+       m)
+      (pid input-post)))))
+  :hints
+  (("Goal"
+    :use
+    (;; Obtain the initial post-cut classification.
+     (:instance
+      post-pre-swap-start-p-implies-first-post-cut
+      (input-1 input-post)
+      (input-2 input-pre))
+     ;; Obtain the initial pre-cut classification of INPUT-PRE.
+     (:instance
+      post-pre-swap-start-p-implies-second-pre-cut-at-start
+      (input-1 input-post)
+      (input-2 input-pre))
+     ;; INPUT-POST remains post-cut after processing INPUT-PRE.
+     (:instance
+      post-cut-remains-post-after-process-cut-step
+      (input input-pre)
+      (i (pid input-post))))
+    ;; Opening the swap predicate supplies the second classification:
+    ;; INPUT-PRE is pre-cut after processing INPUT-POST.
+    :in-theory
+    (disable process-cut-step
+      system-step
+      cm-cut-not-taken-p
+      good-state-p
+      good-cut-meta-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      recovery-free-state-p
+      legal-input-sequencep
+      legal-inputp
+      cl-checkpoint-body-input-p
+     ; post-pre-swap-start-p-implies-first-post-cut
+     ; post-pre-swap-start-p-implies-second-pre-cut-at-start
+      post-cut-remains-post-after-process-cut-step)))
+  ;; Use this theorem explicitly only at the common parent branch.
+  :rule-classes nil)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EQUAL PROCESS-CUT-STEP RESULTS GIVE EQUAL INVERSION COUNTS
+;;
+;; Equivalent implementation states compute exactly equal next metadata.
+;; Therefore, when the next implementation state and postfix are fixed,
+;; using either metadata computation gives the same inversion count.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm inversion-count-of-equal-process-cut-steps
+  (implies
+   (and
+    (state-equivalent-p st-1 st-2)
+    (cut-markers-in-transit-p m st-1)
+    (cut-markers-in-transit-p m st-2)
+    (cut-meta-imp-consistent-p m st-1)
+    (cut-meta-imp-consistent-p m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (legal-inputp st-1 input)
+    (legal-inputp st-2 input)
+    (cl-checkpoint-body-input-p input))
+   (equal
+    (inversion-count
+     (system-step st-2 input)
+     (process-cut-step input st-1 m)
+     postfix)
+    (inversion-count
+     (system-step st-2 input)
+     (process-cut-step input st-2 m)
+     postfix)))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :use
+    (process-cut-step-equal-for-equivalent-states)
+    :in-theory
+    (disable
+     inversion-count
+     process-cut-step
+     system-step
+     state-equivalent-p
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-inputp
+     cl-checkpoint-body-input-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; INVERSION COUNT IS INVARIANT UNDER CL STATE EQUIVALENCE
+;;
+;; The same checkpoint-body postfix is scanned from two equivalent states
+;; using the same cut metadata.
+;;
+;; At each recursive step:
+;;
+;;   1. the current input has the same cut classification;
+;;   2. PROCESS-CUT-STEP produces equal next metadata;
+;;   3. SYSTEM-STEP preserves state equivalence;
+;;   4. the number of before-cut inputs in the suffix is equal; and
+;;   5. the induction hypothesis equates the suffix inversion counts.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm inversion-count-equal-for-equivalent-states
+  (implies
+   (and
+    (state-equivalent-p st-1 st-2)
+    (cut-markers-in-transit-p m st-1)
+    (cut-markers-in-transit-p m st-2)
+    (cut-meta-imp-consistent-p m st-1)
+    (cut-meta-imp-consistent-p m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (true-listp postfix)
+    (legal-input-sequencep st-1 postfix)
+    (legal-input-sequencep st-2 postfix)
+    (cl-checkpoint-body-inputs-p postfix))
+   (equal
+    (inversion-count st-1 m postfix)
+    (inversion-count st-2 m postfix)))
+  :hints
+  (("Subgoal *1/3"
+    :use
+    ((:instance
+      checkpoint-body-inputs-p-implies-first-is-body-input
+      (inputs postfix))
+     (:instance
+      inversion-count-of-equal-process-cut-steps
+      (input (car postfix))
+      (postfix (cdr postfix))))
+    :expand
+    ((inversion-count st-2 m postfix)))
+("Subgoal *1/2"
+ :use
+ (;; The first postfix input is a checkpoint-body input.
+  (:instance
+   checkpoint-body-inputs-p-implies-first-is-body-input
+   (inputs postfix))
+  ;; The remaining postfix is also a checkpoint-body sequence.
+  (:instance
+   checkpoint-body-inputs-p-implies-rest
+   (inputs postfix))
+  ;; Bridge the two PROCESS-CUT-STEP computations in the recursive
+  ;; INVERSION-COUNT term.
+  (:instance
+   inversion-count-of-equal-process-cut-steps
+   (input
+    (car postfix))
+   (postfix
+    (cdr postfix)))
+  ;; First equality:
+  ;;
+  ;;   NB(ST1-next, M1, suffix)
+  ;;       =
+  ;;   NB(ST2-next, M1, suffix)
+  ;;
+  ;; State equivalence is preserved after the common head input.
+  ;; The metadata computed from ST-1 is used as the common metadata.
+  (:instance
+   number-of-before-cut-inputs-equal-for-equivalent-states
+   (st-1
+    (system-step
+     st-1
+     (car postfix)))
+   (st-2
+    (system-step
+     st-2
+     (car postfix)))
+   (m
+    (process-cut-step
+     (car postfix)
+     st-1
+     m))
+   (postfix
+    (cdr postfix)))
+  ;; Second equality:
+  ;;
+  ;;   NB(ST2-next, M1, suffix)
+  ;;       =
+  ;;   NB(ST2-next, M2, suffix)
+  ;;
+  ;; Equivalent starting states compute equal PROCESS-CUT-STEP
+  ;; metadata, so the two metadata arguments are interchangeable.
+  (:instance
+   number-of-before-cut-inputs-of-equal-process-cut-steps
+   (input
+    (car postfix))
+   (postfix
+    (cdr postfix))))
+ :expand
+ ((inversion-count
+   st-2
+   m
+   postfix)))
+   ("Goal"
+    :in-theory
+    (disable cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-inputp
+      cl-checkpoint-body-input-p
+      procs-equivalent-p
+      cl-checkpoint-control-equivalent-p
+      system-step
+      process-cut-step
+      cm-cut-not-taken-p
+      cl-checkpoint-body-inputs-p
+      true-listp
+      get-msg-from-channel))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; POSTFIX INVERSION COUNT COMMUTES ACROSS ONE POST/PRE PAIR
+;;
+;; Original pair:
+;;
+;;     INPUT-POST, INPUT-PRE
+;;
+;; Swapped pair:
+;;
+;;     INPUT-PRE, INPUT-POST
+;;
+;; The pair executions produce:
+;;
+;;   1. equivalent implementation states;
+;;   2. exactly equal cut metadata;
+;;   3. legal execution states for the common POSTFIX; and
+;;   4. all invariants required by
+;;      INVERSION-COUNT-EQUAL-FOR-EQUIVALENT-STATES.
+;;
+;; Therefore, the common POSTFIX has the same inversion count after
+;; either pair order.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm inversion-count-after-post-pre-pair-commutes
+  (let* (;; ------------------------------------------------------
+         ;; Original order: INPUT-POST, INPUT-PRE.
+         ;; ------------------------------------------------------
+         (st-after-post
+          (system-step
+           st
+           input-post))
+         (m-after-post
+          (process-cut-step
+           input-post
+           st
+           m))
+         (st-after-post-pre
+          (system-step
+           st-after-post
+           input-pre))
+         (m-after-post-pre
+          (process-cut-step
+           input-pre
+           st-after-post
+           m-after-post))
+         ;; ------------------------------------------------------
+         ;; Swapped order: INPUT-PRE, INPUT-POST.
+         ;; ------------------------------------------------------
+         (st-after-pre
+          (system-step
+           st
+           input-pre))
+         (m-after-pre
+          (process-cut-step
+           input-pre
+           st
+           m))
+         (st-after-pre-post
+          (system-step
+           st-after-pre
+           input-post))
+         (m-after-pre-post
+          (process-cut-step
+           input-post
+           st-after-pre
+           m-after-pre)))
+    (implies
+     (and
+      (post-pre-swap-start-p
+       st
+       m
+       input-post
+       input-pre)
+      (true-listp postfix)
+      (legal-input-sequencep
+       st
+       (append
+        (list input-post input-pre)
+        postfix))
+      (cl-checkpoint-body-inputs-p
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (equal
+      ;; POSTFIX inversion count after the swapped PRE/POST pair.
+      (inversion-count
+       st-after-pre-post
+       m-after-pre-post
+       postfix)
+      ;; POSTFIX inversion count after the original POST/PRE pair.
+      (inversion-count
+       st-after-post-pre
+       m-after-post-pre
+       postfix))))
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; ---------------------------------------------------------
+     ;; The pair-result implementation states are equivalent.
+     ;; ---------------------------------------------------------
+     (:instance
+      front-post-pre-swap-start-implies-state-equivalent
+      (inputs
+       (list input-post input-pre)))
+     ;; ---------------------------------------------------------
+     ;; The pair-result cut metadata is exactly equal.
+     ;; ---------------------------------------------------------
+     (:instance
+      post-pre-two-process-cut-steps-commute
+      (input-post input-post)
+      (input-pre input-pre))
+     ;; ---------------------------------------------------------
+     ;; Both pair-result states are good and recovery-free.
+     ;; ---------------------------------------------------------
+     (:instance
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      (input-1 input-post)
+      (input-2 input-pre))
+     ;; ---------------------------------------------------------
+     ;; The swapped two-input prefix is legal.
+     ;; ---------------------------------------------------------
+     (:instance
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      (inputs
+       (list input-post input-pre)))
+     ;; ---------------------------------------------------------
+     ;; POSTFIX is legal after the original pair.
+     ;; ---------------------------------------------------------
+     (:instance
+      legal-input-sequencep-of-append-implies-second
+      (inputs-1
+       (list input-post input-pre))
+      (inputs-2 postfix))
+     ;; ---------------------------------------------------------
+     ;; POSTFIX is legal after the swapped pair.
+     ;; ---------------------------------------------------------
+     (:instance
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     ;; ---------------------------------------------------------
+     ;; POSTFIX contains checkpoint-body inputs.
+     ;;
+     ;; Remove INPUT-POST and INPUT-PRE from the complete sequence.
+     ;; ---------------------------------------------------------
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (rest
+        (append
+         (list input-post input-pre)
+         postfix))))
+     ;; ---------------------------------------------------------
+     ;; Invariants after the original POST/PRE pair.
+     ;; ---------------------------------------------------------
+     (:instance
+      good-cut-meta-p-over-process-cut-segment
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (inputs
+       (list input-post input-pre)))
+     ;; ---------------------------------------------------------
+     ;; Invariants after the swapped PRE/POST pair.
+     ;;
+     ;; Exact metadata commutation subsequently identifies this
+     ;; metadata with the original-order metadata.
+     ;; ---------------------------------------------------------
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (inputs
+       (list input-pre input-post)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (inputs
+       (list input-pre input-post)))
+     ;; ---------------------------------------------------------
+     ;; Apply the newly proved equivalent-state inversion theorem.
+     ;;
+     ;; The original-order metadata is selected as the common M.
+     ;; POST-PRE-TWO-PROCESS-CUT-STEPS-COMMUTE equates it with
+     ;; the metadata produced in the swapped order.
+     ;; ---------------------------------------------------------
+     (:instance
+      inversion-count-equal-for-equivalent-states
+      (st-1
+       (run-imp
+        st
+        (list input-post input-pre)))
+      (st-2
+       (run-imp
+        st
+        (list input-pre input-post)))
+      (m
+       (process-cut-segment
+        (list input-post input-pre)
+        st
+        m))
+      (postfix postfix)))
+    :in-theory
+    (disable ;; Keep the recursive inversion function opaque.
+      inversion-count
+      ;; Keep the semantic predicates opaque.
+      state-equivalent-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-input-sequencep
+      legal-inputp
+      cl-checkpoint-body-inputs-p
+      cl-checkpoint-body-input-p
+      process-cut-step
+      system-step
+      cm-cut-not-taken-p
+      true-listp
+      ;; These theorems were instantiated explicitly above.
+      inversion-count-equal-for-equivalent-states
+      post-pre-two-process-cut-steps-commute
+      front-post-pre-swap-start-implies-state-equivalent
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      legal-input-sequencep-of-append-implies-second
+      checkpoint-body-inputs-p-implies-rest
+      good-cut-meta-p-over-process-cut-segment
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      cut-markers-in-transit-p-preserved-by-segment))))
+
+(defthm positive-inversion-count-implies-swap-decreases
+  (implies
+   (and
+    (not
+     (zp
+      (inversion-count st m inputs)))
+    (true-listp inputs)
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (<
+    (inversion-count
+     st m
+     (swap-first-after-before
+      st m inputs))
+    (inversion-count
+     st m inputs)))
+  :hints
+  (("Goal"
+    :in-theory (disable
+		good-state-p
+		good-cut-meta-p
+		cut-meta-imp-consistent-p
+		legal-input-sequencep
+		cl-checkpoint-body-inputs-p
+		recovery-free-state-p
+		system-step
+		cm-cut-not-taken-p
+		process-cut-step
+		cut-markers-in-transit-p
+		post-pre-swap-start-p))
+   ("Subgoal *1/2"
+ :use
+ ((:instance
+   post-pre-swap-start-p-implies-complete-cut-classification
+   (input-post
+    (first inputs))
+   (input-pre
+    (second inputs)))))
+      ("Subgoal *1/3"
+    :do-not-induct t
+    :use
+    ((:instance
+      zero-inversion-count-and-positive-before-count-implies-first-before
+      (st
+       (system-step
+        st
+        (first inputs)))
+      (m
+       (process-cut-step
+        (first inputs)
+        st
+        m))
+      (inputs
+       (rest inputs)))
+     (:instance
+      fixed-post-pre-inversion-is-swappable)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EQUAL PROCESS-CUT-STEP RESULTS GIVE EQUAL BEFORE-CUT SUFFIXES
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm before-cut-inputs-of-equal-process-cut-steps
+  (implies
+   (and
+    (equal
+     (g :proc-ids st-1)
+     (g :proc-ids st-2))
+    (equal
+     (g :channels st-1)
+     (g :channels st-2))
+    (procs-equivalent-p
+     (g :proc-ids st-1)
+     (g :procs st-1)
+     (g :procs st-2))
+    (cl-checkpoint-control-equivalent-p
+     (g :proc-ids st-1)
+     (g :procs st-1)
+     (g :procs st-2))
+    (cut-markers-in-transit-p m st-1)
+    (cut-markers-in-transit-p m st-2)
+    (cut-meta-imp-consistent-p m st-1)
+    (cut-meta-imp-consistent-p m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (legal-inputp st-1 input)
+    (legal-inputp st-2 input)
+    (cl-checkpoint-body-input-p input))
+   (equal
+    (before-cut-inputs
+     (system-step st-2 input)
+     (process-cut-step input st-1 m)
+     postfix)
+    (before-cut-inputs
+     (system-step st-2 input)
+     (process-cut-step input st-2 m)
+     postfix)))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      process-cut-step-equal-for-equivalent-states
+      (st-1 st-1)
+      (st-2 st-2)
+      (m m)
+      (input input)))
+    :in-theory
+    (disable
+     before-cut-inputs
+     process-cut-step
+     system-step
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-inputp
+     cl-checkpoint-body-input-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EQUIVALENT STATES PRODUCE THE SAME BEFORE-CUT SUBSEQUENCE
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm before-cut-inputs-equal-for-equivalent-states
+  (implies
+   (and
+    (state-equivalent-p
+     st-1 st-2)
+    (cut-markers-in-transit-p m st-1)
+    (cut-markers-in-transit-p m st-2)
+    (cut-meta-imp-consistent-p m st-1)
+    (cut-meta-imp-consistent-p m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (true-listp postfix)
+    (legal-input-sequencep
+     st-1 postfix)
+    (legal-input-sequencep
+     st-2 postfix)
+    (cl-checkpoint-body-inputs-p
+     postfix))
+   (equal
+    (before-cut-inputs
+     st-1 m postfix)
+    (before-cut-inputs
+     st-2 m postfix)))
+  :hints
+  (("Subgoal *1/3"
+    :use
+    ((:instance
+      checkpoint-body-inputs-p-implies-first-is-body-input
+      (inputs postfix))
+     (:instance
+      before-cut-inputs-of-equal-process-cut-steps
+      (st-1 st-1)
+      (st-2 st-2)
+      (m m)
+      (input (car postfix))
+      (postfix (cdr postfix))))
+    :expand
+    ((before-cut-inputs
+      st-2 m postfix)))
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      before-cut-inputs-of-equal-process-cut-steps
+      (st-1 st-1)
+      (st-2 st-2)
+      (m m)
+      (input (car postfix))
+      (postfix (cdr postfix))))
+    :expand
+    ((before-cut-inputs
+      st-2 m postfix)))
+   ("Goal"
+    :in-theory
+    (disable cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-inputp
+      cl-checkpoint-body-input-p
+      procs-equivalent-p
+      cl-checkpoint-control-equivalent-p
+      system-step
+      process-cut-step
+      cm-cut-not-taken-p
+      get-msg-from-channel))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EXECUTING A POST/PRE PAIR IN EITHER ORDER GIVES THE SAME
+;; BEFORE-CUT SUBSEQUENCE OF THE REMAINING POSTFIX.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm before-cut-inputs-after-post-pre-pair-commutes
+  (let*
+      (;; Original order: POST, PRE.
+       (st-after-post
+        (system-step
+         st input-post))
+       (m-after-post
+        (process-cut-step
+         input-post st m))
+       (st-after-post-pre
+        (system-step
+         st-after-post
+         input-pre))
+       (m-after-post-pre
+        (process-cut-step
+         input-pre
+         st-after-post
+         m-after-post))
+       ;; Swapped order: PRE, POST.
+       (st-after-pre
+        (system-step
+         st input-pre))
+       (m-after-pre
+        (process-cut-step
+         input-pre st m))
+       (st-after-pre-post
+        (system-step
+         st-after-pre
+         input-post))
+       (m-after-pre-post
+        (process-cut-step
+         input-post
+         st-after-pre
+         m-after-pre)))
+    (implies
+     (and
+      (post-pre-swap-start-p
+       st m input-post input-pre)
+      (true-listp postfix)
+      (legal-input-sequencep
+       st
+       (append
+        (list input-post input-pre)
+        postfix))
+      (cl-checkpoint-body-inputs-p
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (equal
+      ;; Swapped order.
+      (before-cut-inputs
+       st-after-pre-post
+       m-after-pre-post
+       postfix)
+      ;; Original order.
+      (before-cut-inputs
+       st-after-post-pre
+       m-after-post-pre
+       postfix))))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; Pair-result implementation states are equivalent.
+     (:instance
+      front-post-pre-swap-start-implies-state-equivalent
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; Pair-result metadata values are equal.
+     (:instance
+      post-pre-two-process-cut-steps-commute
+      (st st)
+      (m m)
+      (input-post input-post)
+      (input-pre input-pre))
+     ;; Both resulting states remain good and recovery-free.
+     (:instance
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      (st st)
+      (m m)
+      (input-1 input-post)
+      (input-2 input-pre))
+     ;; The swapped prefix is legal.
+     (:instance
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; POSTFIX is legal after the original pair.
+     (:instance
+      legal-input-sequencep-of-append-implies-second
+      (st st)
+      (inputs-1
+       (list input-post input-pre))
+      (inputs-2 postfix))
+     ;; POSTFIX is legal after the swapped pair.
+     (:instance
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      (st st)
+      (m m)
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     ;; POSTFIX consists only of checkpoint-body inputs.
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (rest
+        (append
+         (list input-post input-pre)
+         postfix))))
+     ;; Invariants after the original pair.
+     (:instance
+      good-cut-meta-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; Invariants after the swapped pair.
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-pre input-post)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-pre input-post)))
+     ;; Apply the generalized equivalent-state theorem.
+     (:instance
+      before-cut-inputs-equal-for-equivalent-states
+      (st-1
+       (run-imp
+        st
+        (list input-post input-pre)))
+      (st-2
+       (run-imp
+        st
+        (list input-pre input-post)))
+      ;; Use original-order metadata as the common metadata.
+      ;; PROCESS-CUT-STEP commutation identifies the swapped
+      ;; metadata with this value.
+      (m
+       (process-cut-segment
+        (list input-post input-pre)
+        st
+        m))
+      (postfix postfix)))
+    :in-theory
+    (disable before-cut-inputs
+      state-equivalent-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-input-sequencep
+      legal-inputp
+      cl-checkpoint-body-inputs-p
+      cl-checkpoint-body-input-p
+      process-cut-step
+      system-step
+      cm-cut-not-taken-p
+      true-listp
+      before-cut-inputs-equal-for-equivalent-states
+      post-pre-two-process-cut-steps-commute
+      front-post-pre-swap-start-implies-state-equivalent
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      legal-input-sequencep-of-append-implies-second
+      checkpoint-body-inputs-p-implies-rest
+      good-cut-meta-p-over-process-cut-segment
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      cut-markers-in-transit-p-preserved-by-segment))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ONE POST/PRE SWAP PRESERVES THE BEFORE-CUT SUBSEQUENCE
+;;
+;; In the swap branch:
+;;
+;;   original order: POST, PRE, POSTFIX
+;;   swapped order:  PRE, POST, POSTFIX
+;;
+;; INPUT-POST is omitted from BEFORE-CUT-INPUTS in both orders, while
+;; INPUT-PRE is retained in both orders. The newly proved pair theorem
+;; establishes equality of the recursively computed POSTFIX results.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm before-cut-inputs-of-swap-first-after-before
+  (implies
+   (and
+    (true-listp inputs)
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (equal
+    (before-cut-inputs
+     st
+     m
+     (swap-first-after-before
+      st m inputs))
+    (before-cut-inputs
+     st m inputs)))
+  :hints
+  (("Goal"
+    :induct
+    (swap-first-after-before
+     st m inputs)
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     process-cut-step
+     system-step
+     cm-cut-not-taken-p
+     good-state-p
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     legal-input-sequencep
+     legal-inputp
+     cl-checkpoint-body-inputs-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p
+     cut-markers-in-transit-p))
+   ;; This is the branch in which the first adjacent POST/PRE pair
+   ;; is actually exchanged.
+   ("Subgoal *1/2"
+    :use
+    (;; Supply all four classifications at the common parent branch.
+     (:instance
+      post-pre-swap-start-p-implies-complete-cut-classification
+      (st st)
+      (m m)
+      (input-post
+       (first inputs))
+      (input-pre
+       (second inputs)))
+     ;; The recursive BEFORE-CUT-INPUTS calls on CDDR INPUTS are equal
+     ;; after executing the selected pair in either order.
+     (:instance
+      before-cut-inputs-after-post-pre-pair-commutes
+      (st st)
+      (m m)
+      (input-post
+       (first inputs))
+      (input-pre
+       (second inputs))
+      (postfix
+       (rest
+        (rest inputs)))))
+    ;; Expand the original order through both members of the pair.
+    ;; The swapped order is exposed by SWAP-FIRST-AFTER-BEFORE.
+    :expand
+    ((before-cut-inputs
+      st
+      m
+      inputs)
+     (before-cut-inputs
+      (system-step
+       st
+       (first inputs))
+      (process-cut-step
+       (first inputs)
+       st
+       m)
+      (rest inputs)))
+    :in-theory
+    (disable
+   ;  post-pre-swap-start-p-implies-complete-cut-classification
+  ;   before-cut-inputs-after-post-pre-pair-commutes
+     post-pre-swap-start-p
+     process-cut-step
+     system-step
+     cm-cut-not-taken-p
+     good-state-p
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     legal-input-sequencep
+     legal-inputp
+     cl-checkpoint-body-inputs-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p
+     cut-markers-in-transit-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; AFTER-CUT-INPUTS: EQUAL PROCESS-CUT-STEP RESULTS
+;;
+;; Equivalent states produce equal metadata for INPUT. Therefore, when the
+;; implementation state used for scanning POSTFIX is fixed, either metadata
+;; computation produces the same AFTER-CUT-INPUTS result.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm after-cut-inputs-of-equal-process-cut-steps
+  (implies
+   (and
+    (equal
+     (g :proc-ids st-1)
+     (g :proc-ids st-2))
+    (equal
+     (g :channels st-1)
+     (g :channels st-2))
+    (procs-equivalent-p
+     (g :proc-ids st-1)
+     (g :procs st-1)
+     (g :procs st-2))
+    (cl-checkpoint-control-equivalent-p
+     (g :proc-ids st-1)
+     (g :procs st-1)
+     (g :procs st-2))
+    (cut-markers-in-transit-p m st-1)
+    (cut-markers-in-transit-p m st-2)
+    (cut-meta-imp-consistent-p m st-1)
+    (cut-meta-imp-consistent-p m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (legal-inputp st-1 input)
+    (legal-inputp st-2 input)
+    (cl-checkpoint-body-input-p input))
+   (equal
+    (after-cut-inputs
+     (system-step st-2 input)
+     (process-cut-step input st-1 m)
+     postfix)
+    (after-cut-inputs
+     (system-step st-2 input)
+     (process-cut-step input st-2 m)
+     postfix)))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      process-cut-step-equal-for-equivalent-states
+      (st-1 st-1)
+      (st-2 st-2)
+      (m m)
+      (input input)))
+    :in-theory
+    (disable
+     after-cut-inputs
+     process-cut-step
+     system-step
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-inputp
+     cl-checkpoint-body-input-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; AFTER-CUT-INPUTS IS EQUAL FOR EQUIVALENT STATES
+;;
+;; The same metadata M classifies the current input identically in ST-1
+;; and ST-2. State equivalence and the preservation theorems establish the
+;; induction hypotheses for their successor states.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm after-cut-inputs-equal-for-equivalent-states
+  (implies
+   (and
+    (state-equivalent-p
+     st-1 st-2)
+    (cut-markers-in-transit-p m st-1)
+    (cut-markers-in-transit-p m st-2)
+    (cut-meta-imp-consistent-p m st-1)
+    (cut-meta-imp-consistent-p m st-2)
+    (good-cut-meta-p m)
+    (good-state-p st-1)
+    (good-state-p st-2)
+    (recovery-free-state-p st-1)
+    (recovery-free-state-p st-2)
+    (true-listp postfix)
+    (legal-input-sequencep
+     st-1 postfix)
+    (legal-input-sequencep
+     st-2 postfix)
+    (cl-checkpoint-body-inputs-p
+     postfix))
+   (equal
+    (after-cut-inputs
+     st-1 m postfix)
+    (after-cut-inputs
+     st-2 m postfix)))
+  :hints
+  (("Subgoal *1/3"
+    :use
+    ((:instance
+      checkpoint-body-inputs-p-implies-first-is-body-input
+      (inputs postfix))
+     (:instance
+      after-cut-inputs-of-equal-process-cut-steps
+      (st-1 st-1)
+      (st-2 st-2)
+      (m m)
+      (input
+       (car postfix))
+      (postfix
+       (cdr postfix))))
+    :expand
+    ((after-cut-inputs
+      st-2 m postfix)))
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      after-cut-inputs-of-equal-process-cut-steps
+      (st-1 st-1)
+      (st-2 st-2)
+      (m m)
+      (input
+       (car postfix))
+      (postfix
+       (cdr postfix))))
+    :expand
+    ((after-cut-inputs
+      st-2 m postfix)))
+   ("Goal"
+    :in-theory
+    (disable cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-inputp
+      cl-checkpoint-body-input-p
+      procs-equivalent-p
+      cl-checkpoint-control-equivalent-p
+      system-step
+      process-cut-step
+      cm-cut-not-taken-p
+      get-msg-from-channel))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EXECUTING A POST/PRE PAIR IN EITHER ORDER GIVES THE SAME
+;; AFTER-CUT SUBSEQUENCE OF THE UNCHANGED POSTFIX
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm after-cut-inputs-after-post-pre-pair-commutes
+  (let*
+      (;; Original order: POST, PRE.
+       (st-after-post
+        (system-step
+         st input-post))
+       (m-after-post
+        (process-cut-step
+         input-post st m))
+       (st-after-post-pre
+        (system-step
+         st-after-post
+         input-pre))
+       (m-after-post-pre
+        (process-cut-step
+         input-pre
+         st-after-post
+         m-after-post))
+       ;; Swapped order: PRE, POST.
+       (st-after-pre
+        (system-step
+         st input-pre))
+       (m-after-pre
+        (process-cut-step
+         input-pre st m))
+       (st-after-pre-post
+        (system-step
+         st-after-pre
+         input-post))
+       (m-after-pre-post
+        (process-cut-step
+         input-post
+         st-after-pre
+         m-after-pre)))
+    (implies
+     (and
+      (post-pre-swap-start-p
+       st m input-post input-pre)
+      (true-listp postfix)
+      (legal-input-sequencep
+       st
+       (append
+        (list input-post input-pre)
+        postfix))
+      (cl-checkpoint-body-inputs-p
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (equal
+      ;; Swapped PRE/POST execution.
+      (after-cut-inputs
+       st-after-pre-post
+       m-after-pre-post
+       postfix)
+      ;; Original POST/PRE execution.
+      (after-cut-inputs
+       st-after-post-pre
+       m-after-post-pre
+       postfix))))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :use
+    (;; The two pair-result implementation states are equivalent.
+     (:instance
+      front-post-pre-swap-start-implies-state-equivalent
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; The two executions produce exactly equal cut metadata.
+     (:instance
+      post-pre-two-process-cut-steps-commute
+      (st st)
+      (m m)
+      (input-post input-post)
+      (input-pre input-pre))
+     ;; Both pair-result states remain good and recovery-free.
+     (:instance
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      (st st)
+      (m m)
+      (input-1 input-post)
+      (input-2 input-pre))
+     ;; The swapped two-input prefix is legal.
+     (:instance
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; POSTFIX is legal after the original pair.
+     (:instance
+      legal-input-sequencep-of-append-implies-second
+      (st st)
+      (inputs-1
+       (list input-post input-pre))
+      (inputs-2 postfix))
+     ;; POSTFIX is legal after the swapped pair.
+     (:instance
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      (st st)
+      (m m)
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     ;; Remove INPUT-POST and INPUT-PRE from the body-input sequence.
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (append
+        (list input-post input-pre)
+        postfix)))
+     (:instance
+      checkpoint-body-inputs-p-implies-rest
+      (inputs
+       (rest
+        (append
+         (list input-post input-pre)
+         postfix))))
+     ;; Invariants after the original POST/PRE pair.
+     (:instance
+      good-cut-meta-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-post input-pre)))
+     ;; Invariants after the swapped PRE/POST pair.
+     (:instance
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-pre input-post)))
+     (:instance
+      cut-markers-in-transit-p-preserved-by-segment
+      (st st)
+      (m m)
+      (inputs
+       (list input-pre input-post)))
+     ;; Apply the generalized equivalent-state theorem to POSTFIX.
+     (:instance
+      after-cut-inputs-equal-for-equivalent-states
+      (st-1
+       (run-imp
+        st
+        (list input-post input-pre)))
+      (st-2
+       (run-imp
+        st
+        (list input-pre input-post)))
+      ;; Exact metadata commutation allows both states to use the
+      ;; metadata produced by the original POST/PRE execution.
+      (m
+       (process-cut-segment
+        (list input-post input-pre)
+        st
+        m))
+      (postfix postfix)))
+    :in-theory
+    (disable after-cut-inputs
+      state-equivalent-p
+      cut-markers-in-transit-p
+      cut-meta-imp-consistent-p
+      good-cut-meta-p
+      good-state-p
+      recovery-free-state-p
+      legal-input-sequencep
+      legal-inputp
+      cl-checkpoint-body-inputs-p
+      cl-checkpoint-body-input-p
+      process-cut-step
+      system-step
+      cm-cut-not-taken-p
+      true-listp
+      after-cut-inputs-equal-for-equivalent-states
+      post-pre-two-process-cut-steps-commute
+      front-post-pre-swap-start-implies-state-equivalent
+      front-post-pre-swap-start-implies-swapped-pair-legal
+      front-post-pre-swap-start-implies-swapped-postfix-legal
+      post-pre-swap-start-implies-pair-states-good-and-recovery-free
+      legal-input-sequencep-of-append-implies-second
+      checkpoint-body-inputs-p-implies-rest
+      good-cut-meta-p-over-process-cut-segment
+      cut-meta-imp-consistent-p-over-process-cut-segment
+      cut-markers-in-transit-p-preserved-by-segment))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ONE POST/PRE SWAP PRESERVES THE AFTER-CUT SUBSEQUENCE
+;;
+;; Original order:
+;;
+;;   POST is retained.
+;;   PRE is omitted.
+;;
+;; Swapped order:
+;;
+;;   PRE is omitted.
+;;   POST is retained.
+;;
+;; Therefore, both results begin with INPUT-POST. The pair-commutation
+;; theorem establishes equality of the recursively scanned POSTFIX.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm after-cut-inputs-of-swap-first-after-before
+  (implies
+   (and
+    (true-listp inputs)
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (equal
+    (after-cut-inputs
+     st
+     m
+     (swap-first-after-before
+      st m inputs))
+    (after-cut-inputs
+     st m inputs)))
+  :hints
+  (("Goal"
+    :induct
+    (swap-first-after-before
+     st m inputs)
+    :in-theory
+    (disable
+     post-pre-swap-start-p
+     process-cut-step
+     system-step
+     cm-cut-not-taken-p
+     good-state-p
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     legal-input-sequencep
+     legal-inputp
+     cl-checkpoint-body-inputs-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p
+     cut-markers-in-transit-p))
+   ;; The first adjacent POST/PRE pair is exchanged here.
+   ("Subgoal *1/2"
+    :use
+    (;; Supply all four classifications at the common parent branch.
+     (:instance
+      post-pre-swap-start-p-implies-complete-cut-classification
+      (st st)
+      (m m)
+      (input-post
+       (first inputs))
+      (input-pre
+       (second inputs)))
+     ;; The recursively computed AFTER-CUT-INPUTS results on the
+     ;; unchanged suffix are equal after either execution order.
+     (:instance
+      after-cut-inputs-after-post-pre-pair-commutes
+      (st st)
+      (m m)
+      (input-post
+       (first inputs))
+      (input-pre
+       (second inputs))
+      (postfix
+       (rest
+        (rest inputs)))))
+    ;; Expand the original order through INPUT-POST and INPUT-PRE.
+    :expand
+    ((after-cut-inputs
+      st
+      m
+      inputs)
+     (after-cut-inputs
+      (system-step
+       st
+       (first inputs))
+      (process-cut-step
+       (first inputs)
+       st
+       m)
+      (rest inputs)))
+    :in-theory
+    (disable
+   ;  post-pre-swap-start-p-implies-complete-cut-classification
+   ;  after-cut-inputs-after-post-pre-pair-commutes
+     post-pre-swap-start-p
+     process-cut-step
+     system-step
+     cm-cut-not-taken-p
+     good-state-p
+     good-cut-meta-p
+     cut-meta-imp-consistent-p
+     legal-input-sequencep
+     legal-inputp
+     cl-checkpoint-body-inputs-p
+     cl-checkpoint-body-input-p
+     recovery-free-state-p
+     cut-markers-in-transit-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ONE SWAP PRESERVES THE COMPLETE BEFORE/AFTER PARTITION
+;;
+;; The previous two theorems establish equality of the BEFORE-CUT and
+;; AFTER-CUT filtered lists separately. Therefore, their concatenation is
+;; also unchanged by SWAP-FIRST-AFTER-BEFORE.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cut-partition-of-swap-first-after-before
+  (implies
+   (and
+    (true-listp inputs)
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (equal
+    (append
+     (before-cut-inputs
+      st
+      m
+      (swap-first-after-before
+       st m inputs))
+     (after-cut-inputs
+      st
+      m
+      (swap-first-after-before
+       st m inputs)))
+    (append
+     (before-cut-inputs
+      st m inputs)
+     (after-cut-inputs
+      st m inputs))))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      before-cut-inputs-of-swap-first-after-before
+      (st st)
+      (m m)
+      (inputs inputs))
+     (:instance
+      after-cut-inputs-of-swap-first-after-before
+      (st st)
+      (m m)
+      (inputs inputs)))
+    ;; This is only congruence of APPEND after the two list equalities
+    ;; have been supplied.
+    :in-theory
+    (disable
+     before-cut-inputs-of-swap-first-after-before
+     after-cut-inputs-of-swap-first-after-before
+     swap-first-after-before
+     before-cut-inputs
+     after-cut-inputs
+     cut-markers-in-transit-p
+     cut-meta-imp-consistent-p
+     good-cut-meta-p
+     good-state-p
+     recovery-free-state-p
+     legal-input-sequencep
+     cl-checkpoint-body-inputs-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ZERO BEFORE-CUT COUNT MEANS THE FILTERED BEFORE-CUT LIST IS EMPTY
+;;
+;; NUMBER-OF-BEFORE-CUT-INPUTS and BEFORE-CUT-INPUTS perform the same
+;; stateful scan and use the same cut classification at every position.
+;; Therefore, if the count is zero, no input is retained by the filter.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm zero-number-of-before-cut-inputs-implies-no-before-cut-inputs
+  (implies
+   (equal
+    (number-of-before-cut-inputs
+     st m inputs)
+    0)
+   (equal
+    (before-cut-inputs
+     st m inputs)
+    nil))
+  :hints
+  (("Goal"
+    :induct
+    (number-of-before-cut-inputs
+     st m inputs)
+    :in-theory
+    (disable
+     system-step
+     process-cut-step
+     cm-cut-not-taken-p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ZERO INVERSIONS MEANS THE INPUTS ARE ALREADY PARTITIONED
+;;
+;; If the first input is before-cut, both the original sequence and the
+;; partition begin with that input, and the induction hypothesis handles
+;; the suffix.
+;;
+;; If the first input is after-cut, zero inversion count forces the suffix
+;; to contain no before-cut inputs. The helper theorem therefore reduces
+;; BEFORE-CUT-INPUTS of the suffix to NIL. The induction hypothesis then
+;; says that the entire suffix is its AFTER-CUT-INPUTS subsequence.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm zero-inversion-count-implies-before-append-after
+  (implies
+   (and
+    (true-listp inputs)
+    (equal
+     (inversion-count
+      st m inputs)
+     0))
+   (equal
+    inputs
+    (append
+     (before-cut-inputs
+      st m inputs)
+     (after-cut-inputs
+      st m inputs))))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :induct
+    (inversion-count
+     st m inputs)
+    :in-theory
+    (disable
+     system-step
+     process-cut-step
+     cm-cut-not-taken-p
+     number-of-before-cut-inputs
+     before-cut-inputs
+     after-cut-inputs))
+   ;; ------------------------------------------------------------
+;; First input is after-cut.
+;;
+;; The zero before-count hypothesis rewrites the suffix
+;; BEFORE-CUT-INPUTS to NIL. The induction hypothesis already reduced
+;; CDR INPUTS to the suffix AFTER-CUT-INPUTS.
+;; ------------------------------------------------------------
+("Subgoal *1/2.1'4'"
+ :do-not-induct t
+ :expand
+ ((before-cut-inputs
+   st m inputs)
+  (after-cut-inputs
+   st m inputs))
+ :in-theory
+ (disable
+  before-cut-inputs
+  after-cut-inputs
+  inversion-count
+  number-of-before-cut-inputs
+  system-step
+  process-cut-step
+  cm-cut-not-taken-p))
+;; ------------------------------------------------------------
+;; Empty-list base case.
+;; ------------------------------------------------------------
+("Subgoal *1/1'''"
+ :do-not-induct t
+ :expand
+ ((before-cut-inputs
+   st m nil)
+  (after-cut-inputs
+   st m nil))
+ :in-theory
+ (disable
+  before-cut-inputs
+  after-cut-inputs
+  inversion-count
+  number-of-before-cut-inputs
+  system-step
+  process-cut-step
+  cm-cut-not-taken-p))
+   ("Subgoal *1/2.2"
+ :do-not-induct t
+ ;; The current input is before-cut:
+ ;;
+ ;;   BEFORE-CUT-INPUTS = CONS current-input suffix-before
+ ;;   AFTER-CUT-INPUTS  = suffix-after
+ ;;
+ ;; The induction hypothesis then closes the suffix equality.
+ :expand
+ ((before-cut-inputs
+   st m inputs)
+  (after-cut-inputs
+   st m inputs))
+ ;; Keep the newly exposed suffix calls opaque.
+ :in-theory
+ (disable
+  before-cut-inputs
+  after-cut-inputs
+  inversion-count
+  number-of-before-cut-inputs
+  system-step
+  process-cut-step
+  cm-cut-not-taken-p))))
+
+(defthm reorder-inputs-returns-before-append-after
+  (implies
+   (and
+    (true-listp inputs)
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (equal
+    (reorder-inputs
+     st m inputs)
+    (append
+     (before-cut-inputs
+      st m inputs)
+     (after-cut-inputs
+      st m inputs))))
+  :hints
+  (("Goal"
+    :induct
+    (reorder-inputs st m inputs)
+    :in-theory (disable
+		good-state-p
+		good-cut-meta-p
+		cut-meta-imp-consistent-p
+		legal-input-sequencep
+		cl-checkpoint-body-inputs-p
+		recovery-free-state-p
+		cut-markers-in-transit-p
+		system-step
+		process-cut-step
+		cm-cut-not-taken-p))))
+
+(defthm append-append-singleton
+  (equal
+   (append
+    (append xs (list x))
+    ys)
+   (append
+    xs
+    (cons x ys))))
+
+(defthm append-nil-when-true-listp
+  (implies
+   (true-listp xs)
+   (equal
+    (append xs nil)
+    xs)))
+
+(defthm true-listp-of-append-singleton
+  (true-listp
+   (append xs (list x))))
+
+(defthm true-listp-of-cm-before-cut-input-sequence-of-process-cut-step
+  (implies
+   (true-listp
+    (cm-before-cut-input-sequence m))
+   (true-listp
+    (cm-before-cut-input-sequence
+     (process-cut-step
+      input st m)))))
+
+(defthm true-listp-of-cm-after-cut-input-sequence-of-process-cut-step
+  (implies
+   (true-listp
+    (cm-after-cut-input-sequence m))
+   (true-listp
+    (cm-after-cut-input-sequence
+     (process-cut-step
+      input st m)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ONE PROCESS-CUT-STEP UPDATES THE BEFORE-CUT SEQUENCE
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cm-before-cut-input-sequence-of-process-cut-step
+  (equal
+   (cm-before-cut-input-sequence
+    (process-cut-step input st m))
+   (if
+    (cm-cut-not-taken-p
+     m
+     (pid input))
+    (append
+     (cm-before-cut-input-sequence m)
+     (list input))
+    (cm-before-cut-input-sequence m)))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable current-msg-for-receive
+      get-msg-from-channel
+      system-step))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ONE PROCESS-CUT-STEP UPDATES THE AFTER-CUT SEQUENCE
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cm-after-cut-input-sequence-of-process-cut-step
+  (equal
+   (cm-after-cut-input-sequence
+    (process-cut-step input st m))
+   (if
+    (cm-cut-not-taken-p
+     m
+     (pid input))
+    (cm-after-cut-input-sequence m)
+    (append
+     (cm-after-cut-input-sequence m)
+     (list input))))
+  :hints
+  (("Goal"
+    :in-theory
+    (disable current-msg-for-receive
+      get-msg-from-channel
+      system-step))))
+
+(defthm cm-before-cut-input-sequence-of-process-cut-segment
+  (implies
+   ;; Necessary even for the empty-input base case.
+   (true-listp
+    (cm-before-cut-input-sequence m))
+   (equal
+    (cm-before-cut-input-sequence
+     (process-cut-segment
+      inputs st m))
+    (append
+     (cm-before-cut-input-sequence m)
+     (before-cut-inputs
+      st m inputs))))
+:hints
+(("Goal"
+  :induct
+  (process-cut-segment
+   inputs st m)
+  :do-not
+  '(generalize eliminate-destructors))
+ ;; Recursive case: expand only the current input.
+ ("Subgoal *1/2"
+  :do-not-induct t
+  :expand
+  ((process-cut-segment
+    inputs st m)
+   (before-cut-inputs
+    st m inputs)))
+ ;; Empty-input base case.
+ ("Subgoal *1/1"
+  :do-not-induct t
+  :expand
+  ((process-cut-segment
+    inputs st m)
+   (before-cut-inputs
+    st m inputs)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; PROCESS-CUT-SEGMENT RECORDS EXACTLY THE FILTERED AFTER-CUT INPUTS
+;;
+;; The initial sequence already stored in M remains as a prefix.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cm-after-cut-input-sequence-of-process-cut-segment
+  (implies
+   (true-listp
+    (cm-after-cut-input-sequence m))
+   (equal
+    (cm-after-cut-input-sequence
+     (process-cut-segment
+      inputs st m))
+    (append
+     (cm-after-cut-input-sequence m)
+     (after-cut-inputs
+      st m inputs))))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :induct
+    (process-cut-segment
+     inputs st m)
+    :do-not
+    '(generalize eliminate-destructors))
+   ;; Recursive case: open only the current recursion level.
+   ("Subgoal *1/2"
+    :do-not-induct t
+    :expand
+    ((process-cut-segment
+      inputs st m)
+     (after-cut-inputs
+      st m inputs)))
+   ;; Empty-input base case.
+   ("Subgoal *1/1"
+    :do-not-induct t
+    :expand
+    ((process-cut-segment
+      inputs st m)
+     (after-cut-inputs
+      st m inputs)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; REORDER-INPUTS EQUALS THE PARTITION RECORDED BY PROCESS-CUT-SEGMENT
+;;
+;; This theorem combines:
+;;
+;;   REORDER-INPUTS
+;;     = BEFORE-CUT-INPUTS ++ AFTER-CUT-INPUTS
+;;
+;; with:
+;;
+;;   final recorded before sequence
+;;     = initial before sequence ++ BEFORE-CUT-INPUTS
+;;
+;;   final recorded after sequence
+;;     = initial after sequence ++ AFTER-CUT-INPUTS
+;;
+;; Since both initial recorded sequences are NIL, the final metadata fields
+;; contain exactly the two filtered lists.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm reorder-inputs-equals-process-cut-segment-partition
+  (implies
+   (and
+    (equal
+     (cm-before-cut-input-sequence m)
+     nil)
+    (equal
+     (cm-after-cut-input-sequence m)
+     nil)
+    (true-listp inputs)
+    (cut-markers-in-transit-p m st)
+    (cut-meta-imp-consistent-p m st)
+    (good-cut-meta-p m)
+    (good-state-p st)
+    (recovery-free-state-p st)
+    (legal-input-sequencep
+     st inputs)
+    (cl-checkpoint-body-inputs-p
+     inputs))
+   (equal
+    (reorder-inputs
+     st m inputs)
+    (append
+     (cm-before-cut-input-sequence
+      (process-cut-segment
+       inputs st m))
+     (cm-after-cut-input-sequence
+      (process-cut-segment
+       inputs st m)))))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :use
+    (reorder-inputs-returns-before-append-after
+     cm-before-cut-input-sequence-of-process-cut-segment
+     cm-after-cut-input-sequence-of-process-cut-segment))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; FRESH CUT METADATA STARTS WITH BOTH RECORDED SEQUENCES EMPTY
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm cm-before-cut-input-sequence-of-make-cut-meta
+  (equal
+   (cm-before-cut-input-sequence
+    (make-cut-meta
+     sid initiator st))
+   nil))
+
+(defthm cm-after-cut-input-sequence-of-make-cut-meta
+  (equal
+   (cm-after-cut-input-sequence
+    (make-cut-meta
+     sid initiator st))
+   nil))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DIRECT AGREEMENT FOR A CUT SCAN STARTING WITH FRESH METADATA
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm before-cut-inputs-agrees-with-fresh-cut-metadata
+  (equal
+   (cm-before-cut-input-sequence
+    (process-cut-segment
+     inputs
+     st
+     (make-cut-meta
+      sid initiator st)))
+   (before-cut-inputs
+    st
+    (make-cut-meta
+     sid initiator st)
+    inputs))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      cm-before-cut-input-sequence-of-process-cut-segment
+      (m
+       (make-cut-meta
+        sid initiator st))))
+    :in-theory
+    (disable
+     process-cut-segment
+     before-cut-inputs
+     make-cut-meta
+     cm-before-cut-input-sequence))))
+
+(defthm after-cut-inputs-agrees-with-fresh-cut-metadata
+  (equal
+   (cm-after-cut-input-sequence
+    (process-cut-segment
+     inputs
+     st
+     (make-cut-meta
+      sid initiator st)))
+   (after-cut-inputs
+    st
+    (make-cut-meta
+     sid initiator st)
+    inputs))
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      cm-after-cut-input-sequence-of-process-cut-segment
+      (m
+       (make-cut-meta
+        sid initiator st))))
+    :in-theory
+    (disable
+     process-cut-segment
+     after-cut-inputs
+     make-cut-meta
+     cm-after-cut-input-sequence))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; THE UNIFIED SCANNER METADATA EQUALS PROCESS-CUT-SEGMENT
+;;
+;; Because the complete-segment predicate says that the scanner's
+;; end-exclusive completion index equals LEN INPUT-SEG, the scanner has
+;; processed the entire segment. Its final metadata must therefore equal
+;; the metadata produced by PROCESS-CUT-SEGMENT over the same inputs.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm checkpoint-segment-meta-equals-process-cut-segment
+  (implies
+   (checkpoint-complete-segment-p st input-seg)
+   (equal
+    (checkpoint-segment-meta st input-seg)
+    (process-cut-segment
+     input-seg
+     st
+     (checkpoint-segment-initial-meta st input-seg))))
+  :rule-classes nil
+  :hints
+  (("Goal"
+    :do-not-induct t
+    :in-theory
+    (disable checkpoint-segment-initial-meta
+      checkpoint-segment-completep
+      checkpoint-completes-at-segment-end-p
+      scan-until-checkpoint-done
+      process-cut-segment
+      process-cut-step
+      system-step
+      checkpoint-collection-complete-p
+      legal-input-sequencep
+      recovery-free-state-p
+      cl-checkpoint-body-inputs-p))))

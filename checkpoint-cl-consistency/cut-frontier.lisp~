@@ -1,0 +1,108 @@
+(in-package "ACL2")
+(include-book "model")
+(include-book "spec_input_gen")
+
+
+
+
+
+(defun marker-for-sid-in-channel-p (target-sid channel)
+  (declare
+   (xargs :measure (acl2-count channel)))
+
+  (if (endp channel)
+      nil
+
+    (or
+     (and
+      (equal
+       (msg-type (first channel))
+       :marker)
+
+      (equal
+       (sid (first channel))
+       target-sid))
+
+     (marker-for-sid-in-channel-p
+      target-sid
+      (rest channel)))))
+
+
+
+(defun cut-frontier-markers-for-dsts-p
+    (src dsts target-sid m channels)
+
+  (declare
+   (xargs :measure (acl2-count dsts)))
+
+  ;; If SRC has not taken its cut yet,
+  ;; there is no frontier obligation from SRC.
+  (if (cm-cut-not-taken-p m src)
+      t
+    ;; SRC has taken its cut.
+    ;; Check each destination that has not yet taken its cut.
+    (if (endp dsts)
+        t
+      (let ((dst (first dsts)))
+        (and
+         ;; If DST has not taken its cut,
+         ;; the marker must still be on SRC -> DST.
+         (if (cm-cut-not-taken-p m dst)
+             (marker-for-sid-in-channel-p
+              target-sid
+              (channel-state
+               src
+               dst
+               channels))
+           ;; DST has already taken its cut,
+           ;; so no frontier requirement exists.
+           t)
+
+         (cut-frontier-markers-for-dsts-p
+          src
+          (rest dsts)
+          target-sid
+          m
+          channels))))))
+
+
+(defun cut-frontier-markers-for-srcs-p
+    (srcs target-sid m procs channels)
+
+  (declare
+   (xargs :measure (acl2-count srcs)))
+
+  (if (endp srcs)
+      t
+
+    (let ((src (first srcs)))
+
+      (and
+       (cut-frontier-markers-for-dsts-p
+        src
+        (nbrs-to
+         (g src procs))
+        target-sid
+        m
+        channels)
+
+       (cut-frontier-markers-for-srcs-p
+        (rest srcs)
+        target-sid
+        m
+        procs
+        channels)))))
+
+
+
+(defun cut-frontier-markers-p (m st)
+  (cut-frontier-markers-for-srcs-p
+   (proc-ids st)
+   (cm-sid m)
+   m
+   (procs st)
+   (channels st)))
+
+
+
+

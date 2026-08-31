@@ -1,0 +1,45 @@
+
+
+
+Subgoal 2.2'
+(IMPLIES
+ (AND
+  (INCOMING-CHANNELS-EQUIVALENT-FOR-PROC-P
+   (G I (G :WAITING-MARKER-FROM M))
+   I (G :CHANNELS ST-CUR)
+   (G
+    :CHANNELS
+    (RUN-SPEC
+         SPEC-START-ST
+         (REPLAY-INPUTS-FOR-ONE-PROC I (G :NBRS-FROM (G I (G :PROCS ST-CUR)))
+                                     M))))
+  (NOT (MEMBERP I (G :CUT-NOT-TAKEN M)))
+  (CONSP (G I (G :WAITING-MARKER-FROM M)))
+  (EQUAL (G :TTYPE INPUT) :RECEIVE)
+  (LEGAL-INPUTP ST-CUR INPUT)
+  (CUT-SCAN-NO-RECOVERY-STEP-P INPUT ST-CUR)
+  (CONSP (G (G :SENDER INPUT)
+            (G (G :PID INPUT)
+               (G :CHANNELS ST-CUR))))
+  (EQUAL (G :MSG-TYPE (CAR (G (G :SENDER INPUT)
+                              (G (G :PID INPUT)
+                                 (G :CHANNELS ST-CUR)))))
+         :NORMAL)
+  (NOT (MEMBERP (G :PID INPUT)
+                (G :CUT-NOT-TAKEN M)))
+  (MEMBERP (G :SENDER INPUT)
+           (G (G :PID INPUT)
+              (G :WAITING-MARKER-FROM M))))
+ (INCOMING-CHANNELS-EQUIVALENT-FOR-PROC-P
+  (G I (G :WAITING-MARKER-FROM M))
+  I
+  (G :CHANNELS (STEP-RCV ST-CUR (G :PID INPUT)
+                         (G :SENDER INPUT)))
+  (G
+    :CHANNELS
+    (RUN-SPEC
+         SPEC-START-ST
+         (REPLAY-INPUTS-FOR-ONE-PROC I (G :NBRS-FROM (G I (G :PROCS ST-CUR)))
+                                     (CM-AFTER-CUT-APPEND M (G :PID INPUT)
+                                                          (G :SENDER INPUT)
+                                                          INPUT))))))

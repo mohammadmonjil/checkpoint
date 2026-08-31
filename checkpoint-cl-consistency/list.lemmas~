@@ -1,0 +1,11 @@
+(defthm memberp-of-remove1-equal-when-uniquep
+  (implies
+   (and
+    (uniquep xs)
+    (memberp a xs))
+   (not
+    (memberp a
+             (remove1-equal a xs))))
+  :hints
+  (("Goal"
+    :induct xs)))
