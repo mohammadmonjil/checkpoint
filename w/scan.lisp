@@ -1,8 +1,8 @@
 
 (in-package "ACL2")
 (include-book "model")
-;; (include-book "good_state_inv")	
-;; (include-book "channel_equivalence")
+(include-book "good_state_inv")	
+(include-book "channel_equivalence")
 
 
 (defun current-msg-for-receive (input st)

@@ -1,6 +1,5 @@
 (in-package "ACL2")
 (include-book "model")
-(include-book "basic")
 (include-book "good_state_inv")
 
 

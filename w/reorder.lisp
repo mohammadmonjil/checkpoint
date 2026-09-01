@@ -3,8 +3,9 @@
 (include-book "model")
 (include-book "scan")
 (include-book "good_state_inv")
-(include-book "channel_equivalence")
+;;(include-book "channel_equivalence")
 (include-book "basic")
+(include-book "cut_marker_inv")
 (include-book "recovery_inv")
 (include-book "cut_meta_inv")
 

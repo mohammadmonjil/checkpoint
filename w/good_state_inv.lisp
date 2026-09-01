@@ -3,7 +3,6 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (in-package "ACL2")
 (include-book "model")
-(include-book "basic")
 
 ;; TODO:
 ;; 1.   Strengthened: any recovery message must carry a sid known by all
