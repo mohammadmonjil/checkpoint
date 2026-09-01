@@ -1,4 +1,0 @@
-(in-package "ACL2")
-(include-book "cut_meta_inv")
-(include-book "cut_marker_inv")
-
