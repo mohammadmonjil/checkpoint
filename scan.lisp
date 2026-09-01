@@ -223,30 +223,51 @@
 
 
 
+;; (defun process-cut-checkpoint (input st m)
+;;   (let* ((i          (pid input))
+;;          (procs      (procs st))
+;;          (p          (g i procs))
+;;          (input-sid  (list i
+;;                            (counter p)))
+;;          (target-sid (cm-sid m)))
+
+;;     (if (equal input-sid target-sid)
+
+;;         ;; This is the :start-checkpoint that begins TARGET-SID.
+;;         ;; The initiator now takes its cut.
+;;         (let* ((m (cm-remove-cut-not-taken m i))
+;;                (m (s :waiting-marker-from
+;;                      (s i
+;;                         (nbrs-from p)
+;;                         (g :waiting-marker-from m))
+;;                      m)))
+;;           m)
+
+;;       ;; A :start-checkpoint for some other checkpoint.
+;;       ;; It does not affect this cut scan.
+;; 	m)))
+
+
+
 (defun process-cut-checkpoint (input st m)
   (let* ((i          (pid input))
-         (procs      (procs st))
-         (p          (g i procs))
-         (input-sid  (list i
-                           (counter p)))
+         (p          (g i (procs st)))
+         ;; SID started by this input, using the pre-step counter.
+         (input-sid  (list i (counter p)))
          (target-sid (cm-sid m)))
 
     (if (equal input-sid target-sid)
 
-        ;; This is the :start-checkpoint that begins TARGET-SID.
-        ;; The initiator now takes its cut.
-        (let* ((m (cm-remove-cut-not-taken m i))
-               (m (s :waiting-marker-from
-                     (s i
-                        (nbrs-from p)
-                        (g :waiting-marker-from m))
-                     m)))
-          m)
+        ;; This input starts the checkpoint tracked by M:
+        ;; I takes its cut and waits for markers from all incoming neighbors.
+        (let ((m (cm-remove-cut-not-taken m i)))
+          (cm-set-waiting-marker-for
+           m
+           i
+           (nbrs-from p)))
 
-      ;; A :start-checkpoint for some other checkpoint.
-      ;; It does not affect this cut scan.
-	m)))
-
+      ;; Starting another checkpoint does not affect this cut.
+      m)))
 
 (defun process-cut-step (input st m)
 

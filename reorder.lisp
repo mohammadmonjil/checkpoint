@@ -2,12 +2,12 @@
 
 (include-book "model")
 (include-book "scan")
-(include-book "good_state_invariants")
-(include-book "channel_equivalence")
+(include-book "good_state_inv")
+;;(include-book "channel_equivalence")
 (include-book "basic")
-(include-book "cfinvariants")
-(include-book "rec")
-(include-book "cut_inv")
+(include-book "cut_marker_inv")
+(include-book "recovery_inv")
+(include-book "cut_meta_inv")
 
 ;; LOCAL-DEFTHM is only used inside the encapsulated proof sections below.
 ;; It keeps the source readable while making the supporting theorem event
@@ -6595,6 +6595,115 @@
 ;;     INPUT-PRE, INPUT-POST
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; If two processes have different CUT-NOT-TAKEN status,
+;; they cannot be the same process.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  cl-cut-not-taken-status-different-implies-pids-different
+
+  (implies
+   (and
+    (cm-cut-not-taken-p m i)
+    (not (cm-cut-not-taken-p m j)))
+
+   (not
+    (equal i j))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; The metadata transition for starting the target checkpoint at I
+;; commutes with processing a marker at another process J.
+;;
+;; START update at I:
+;;
+;;   1. remove I from CUT-NOT-TAKEN
+;;   2. set WAITING-MARKER-FOR[I] = WI
+;;
+;; Marker update at J:
+;;
+;;   remove SENDER from WAITING-MARKER-FOR[J]
+;;
+;; CM-ADD-AFTER-CUT-INPUT-SEQUENCE only updates the recorded input
+;; sequence, so it also commutes with these control-field updates.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  cl-cut-take-update-commutes-with-other-waiting-update
+
+  (implies
+   (not (equal i j))
+
+   (equal
+    ;; Update J first, then I takes the cut.
+    (cm-set-waiting-marker-for
+     (cm-remove-cut-not-taken
+      (cm-set-waiting-marker-for m j wj)
+      i)
+     i
+     wi)
+
+    ;; I takes the cut first, then update J.
+    (cm-set-waiting-marker-for
+     (cm-set-waiting-marker-for
+      (cm-remove-cut-not-taken m i)
+      i
+      wi)
+     j
+     wj))))
+
+
+(defthm
+  cl-waiting-marker-for-after-other-proc-taking-cut
+
+  (implies
+   (not
+    (equal i j))
+
+   (equal
+    (cm-waiting-marker-for
+
+     (cm-add-after-cut-input-sequence
+
+      (cm-set-waiting-marker-for
+       (cm-remove-cut-not-taken m i)
+       i
+       wi)
+
+      input)
+
+     j)
+
+    (cm-waiting-marker-for
+
+     (cm-add-after-cut-input-sequence
+      m
+      input)
+
+     j))))
+
+(defthm
+  cl-waiting-marker-for-unchanged-by-other-proc-taking-cut
+
+  (implies
+   (not
+    (equal i j))
+
+   (equal
+    (cm-waiting-marker-for
+
+     (cm-set-waiting-marker-for
+      (cm-remove-cut-not-taken m i)
+      i
+      wi)
+
+     j)
+
+    (cm-waiting-marker-for
+     m
+     j))))
+  
 (defthm post-pre-two-process-cut-steps-commute
     (implies
      (and

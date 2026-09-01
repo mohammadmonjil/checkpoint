@@ -149,6 +149,17 @@
      x
      (remove1-equal x xs)))))
 
+(defthm
+  not-memberp-of-remove1-equal-when-not-memberp
+
+  (implies
+   (and
+    (true-listp xs)
+    (not (memberp j xs)))
+
+   (not
+    (memberp j
+             (remove1-equal i xs)))))
 
 ;; ------------------------------------------------------------
 ;; Removing one occurrence from a proper list produces another
@@ -195,6 +206,19 @@
     (subset xs ys)
     (memberp x xs))
    (memberp x ys)))
+
+
+(defthm not-memberp-of-remove-from-list-when-not-memberp
+  (implies
+   (not (memberp y xs))
+   (not (memberp y
+                 (remove-from-list xs x)))))
+
+
+(defthm uniquep-of-remove-from-list
+  (implies
+   (uniquep xs)
+   (uniquep (remove-from-list xs x))))
 
 ;; ------------------------------------------------------------
 ;; Reading :NBRS-FROM after replacing one process.

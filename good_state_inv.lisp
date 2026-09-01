@@ -123,6 +123,7 @@
 (defun good-snapshot-entry-p (entry nbrs-from-i)
   (and (good-snapshot-status-p (snapshot-status entry))
        (true-listp (snapshot-waiting-marker-from entry))
+       (uniquep (snapshot-waiting-marker-from entry))
        (subset (snapshot-waiting-marker-from entry) nbrs-from-i)
        (good-channel-snapshot-record-p nbrs-from-i
                                        (snapshot-channel-snapshots entry))))
@@ -1094,9 +1095,169 @@
 ;; Main target for initialization: the state produced by make-initial-state
 ;; satisfies the global structural invariant good-state-p.
 
-(defthm initial-state-is-good-state
-    (good-state-p (make-initial-state)))
 
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Every initialized process stores exactly the distinguished :INIT SID.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm snapshot-ids-of-install-initial-snapshot
+  (equal
+   (snapshot-ids
+    (install-initial-snapshot p))
+   (list :init))
+  :hints
+  (("Goal"
+    :in-theory
+    (enable
+     install-initial-snapshot
+     add-snapshot-id
+     snoc
+     memberp))))
+
+
+;; :INIT is explicitly accepted by the stored-SID predicate, independently
+;; of the initiator and its current counter.
+(defthm stored-sids-for-initiator-have-smaller-counters-p-of-init
+  (stored-sids-for-initiator-have-smaller-counters-p
+   initiator
+   initiator-counter
+   (list :init))
+  :hints
+  (("Goal"
+    :in-theory
+    (enable
+     stored-sids-for-initiator-have-smaller-counters-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Every initialized holder satisfies the condition for one initiator.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-stored-sids-for-initiator-have-smaller-counters-p-of-initial-procs
+
+  (implies
+   (and
+    (true-listp holders)
+    (subset holders all-ids)
+    (uniquep all-ids))
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    holders
+    (install-initial-snapshots
+     all-ids
+     (make-procs-aux all-ids all-ids))))
+
+  :hints
+  (("Goal"
+    :induct (len holders)
+
+    :in-theory
+    (e/d
+     (all-stored-sids-for-initiator-have-smaller-counters-p
+      subset)
+
+     (install-initial-snapshots
+      install-initial-snapshot
+      make-procs-aux
+      stored-sids-for-initiator-have-smaller-counters-p)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift the result over every initiator.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-initial-procs-aux
+
+  (implies
+   (and
+    (true-listp initiators)
+    (true-listp holders)
+    (subset holders all-ids)
+    (uniquep all-ids))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    holders
+    (install-initial-snapshots
+     all-ids
+     (make-procs-aux all-ids all-ids))))
+
+  :hints
+  (("Goal"
+    :induct (len initiators)
+
+    :in-theory
+    (e/d
+     (all-initiators-stored-sids-have-smaller-counters-p)
+
+     (all-stored-sids-for-initiator-have-smaller-counters-p
+      install-initial-snapshots
+      install-initial-snapshot
+      make-procs-aux)))
+
+   ("Subgoal *1/1"
+    :use
+    ((:instance
+      all-stored-sids-for-initiator-have-smaller-counters-p-of-initial-procs
+      (initiator (car initiators)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Specialize both lists to the full process-ID list.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-initial-procs
+
+  (implies
+   (and
+    (true-listp ids)
+    (uniquep ids))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids
+    ids
+    (install-initial-snapshots
+     ids
+     (make-procs-aux ids ids))))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-initial-procs-aux
+      (initiators ids)
+      (holders ids)
+      (all-ids ids)))
+
+    :in-theory
+    (disable
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+(defthm initial-state-is-good-state
+  (good-state-p
+   (make-initial-state))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-initial-procs
+      (ids (make-proc-ids))))
+
+    :in-theory
+    (e/d
+     (good-state-p
+      make-initial-state
+      make-procs)
+
+     (all-initiators-stored-sids-have-smaller-counters-p)))))
 
 ;end target: initial-state-is-good-state
 
@@ -1317,10 +1478,10 @@
 ;; Main target for :crash inputs: combine the process-table update proof with
 ;; the channel-table preservation proof.
 
-(defthm good-state-p-of-system-step-crash
-  (implies (and (good-state-p st)
-                (equal (ttype input) :crash))
-           (good-state-p (system-step st input))))
+;; (defthm good-state-p-of-system-step-crash
+;;   (implies (and (good-state-p st)
+;;                 (equal (ttype input) :crash))
+;;            (good-state-p (system-step st input))))
 
 
 ;end target: good-state-p-of-system-step-crash
@@ -1831,10 +1992,10 @@
 ;; Main target for :normal inputs: combine the local-state process update with
 ;; the preservation of outgoing compute-message sends.
 
-(defthm good-state-p-of-system-step-normal
-  (implies (and (good-state-p st)
-                (equal (ttype input) :normal))
-           (good-state-p (system-step st input))))
+;; (defthm good-state-p-of-system-step-normal
+;;   (implies (and (good-state-p st)
+;;                 (equal (ttype input) :normal))
+;;            (good-state-p (system-step st input))))
 
 
 ;end target: good-state-p-of-system-step-normal
@@ -1860,14 +2021,28 @@
 (defthm good-normal-msg-list-p-of-g-of-s-nil-nil
   (good-normal-msg-list-p (g k (s j nil nil))))
 
+;; (defthm good-snapshot-entry-p-of-make-snapshot-entry
+;;   (implies (and (true-listp waiting-marker-from)
+;;                 (subset waiting-marker-from nbrs-from-i))
+;;            (good-snapshot-entry-p
+;;             (make-snapshot-entry local-snap-shot
+;;                                  waiting-marker-from
+;;                                  j)
+;;             nbrs-from-i)))
+
 (defthm good-snapshot-entry-p-of-make-snapshot-entry
-  (implies (and (true-listp waiting-marker-from)
-                (subset waiting-marker-from nbrs-from-i))
-           (good-snapshot-entry-p
-            (make-snapshot-entry local-snap-shot
-                                 waiting-marker-from
-                                 j)
-            nbrs-from-i)))
+  (implies
+   (and
+    (true-listp waiting-marker-from)
+    (uniquep waiting-marker-from)
+    (subset waiting-marker-from nbrs-from-i))
+   (good-snapshot-entry-p
+    (make-snapshot-entry
+     local-snap-shot
+     waiting-marker-from
+     j)
+    nbrs-from-i)))
+
 
 (defthm good-snapshots-p-of-set-snapshot-entry-general
   (implies
@@ -2486,18 +2661,18 @@
 
 
 
-(defthm good-state-p-of-system-step-start-checkpoint
-  (implies (and (good-state-p st)
-                (equal (ttype input) :start-checkpoint)
-		(memberp (pid input) (proc-ids st)))
-           (good-state-p (system-step st input)))
-  :hints
-  (("Goal"
-    :in-theory (disable good-proc-p
-			start-checkpoint-helper
-                        make-snapshot-entry
-                        install-snapshot-entry
-			create-marker-message))))
+;; (defthm good-state-p-of-system-step-start-checkpoint
+;;   (implies (and (good-state-p st)
+;;                 (equal (ttype input) :start-checkpoint)
+;; 		(memberp (pid input) (proc-ids st)))
+;;            (good-state-p (system-step st input)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory (disable good-proc-p
+;; 			start-checkpoint-helper
+;;                         make-snapshot-entry
+;;                         install-snapshot-entry
+;; 			create-marker-message))))
 
 
 ;end target: good-state-p-of-system-step-start-checkpoint
@@ -2829,24 +3004,24 @@
     :induct
     (nbrs-to-from-consistent-p srcs dsts procs))))
 
-(defthm good-state-p-of-system-step-recover
-  (implies (and (good-state-p st)
-                (equal (ttype input) :recover)
-		(memberp (pid input) (proc-ids st))
-                ;; A recovery message is now good only if its sid is known
-                ;; by every process.  This should normally come from a
-                ;; stronger legal-input/global recovery invariant.
-                (all-procs-have-snapshot-id-p
-                 (car (snapshot-ids
-                       (g (pid input) (procs st))))
-                 (proc-ids st)
-                 (procs st)))
-           (good-state-p (system-step st input)))
-  :hints
-  (("Goal"
-    :in-theory (disable good-proc-p
-			start-recovery-helper
-			create-recovery-message))))
+;; (defthm good-state-p-of-system-step-recover
+;;   (implies (and (good-state-p st)
+;;                 (equal (ttype input) :recover)
+;; 		(memberp (pid input) (proc-ids st))
+;;                 ;; A recovery message is now good only if its sid is known
+;;                 ;; by every process.  This should normally come from a
+;;                 ;; stronger legal-input/global recovery invariant.
+;;                 (all-procs-have-snapshot-id-p
+;;                  (car (snapshot-ids
+;;                        (g (pid input) (procs st))))
+;;                  (proc-ids st)
+;;                  (procs st)))
+;;            (good-state-p (system-step st input)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory (disable good-proc-p
+;; 			start-recovery-helper
+;; 			create-recovery-message))))
 
 ;end target: good-state-p-of-system-step-recover
 
@@ -3258,45 +3433,45 @@
     :induct
     (nbrs-to-from-consistent-p srcs dsts procs))))
 
-(defthm good-state-p-of-handle-first-recovery-msg
-  (implies
-   (and (good-state-p st)
+;; (defthm good-state-p-of-handle-first-recovery-msg
+;;   (implies
+;;    (and (good-state-p st)
 
-        ;; Valid receiver and sender.
-        (memberp i (proc-ids st))
-        (memberp j (proc-ids st))
-        (memberp j (nbrs-from (g i (procs st))))
+;;         ;; Valid receiver and sender.
+;;         (memberp i (proc-ids st))
+;;         (memberp j (proc-ids st))
+;;         (memberp j (nbrs-from (g i (procs st))))
 
-        ;; msg is the first message on channel j -> i.
-        (equal msg
-               (get-msg-from-channel j i (channels st)))
+;;         ;; msg is the first message on channel j -> i.
+;;         (equal msg
+;;                (get-msg-from-channel j i (channels st)))
 
-        ;; This is really a recovery message.
-        (equal (msg-type msg) :recovery)
+;;         ;; This is really a recovery message.
+;;         (equal (msg-type msg) :recovery)
 
-        ;; First recovery-message case: receiver has not started recovery yet.
-        (equal (proc-status (g i (procs st))) :normal)
+;;         ;; First recovery-message case: receiver has not started recovery yet.
+;;         (equal (proc-status (g i (procs st))) :normal)
 
-        ;; The receiver has the snapshot being recovered.
-        ;; This is needed for the local recovery update.
-        (memberp (sid msg)
-                 (snapshot-ids (g i (procs st))))
+;;         ;; The receiver has the snapshot being recovered.
+;;         ;; This is needed for the local recovery update.
+;;         (memberp (sid msg)
+;;                  (snapshot-ids (g i (procs st))))
 
-        ;; New recovery-message invariant: the sid must be known by all
-        ;; processes, because this message may be forwarded.
-        (all-procs-have-snapshot-id-p
-         (sid msg)
-         (proc-ids st)
-         (procs st)))
-   (good-state-p
-    (handle-first-recovery-msg st i j msg)))
-  :hints
-  (("Goal"
-    :in-theory (disable good-proc-p
-                        remove-message-from-channel
-                        get-msg-from-channel
-                        update-proc-for-first-recovery-msg))))
-;end target: good-state-p-of-handle-first-recovery-msg
+;;         ;; New recovery-message invariant: the sid must be known by all
+;;         ;; processes, because this message may be forwarded.
+;;         (all-procs-have-snapshot-id-p
+;;          (sid msg)
+;;          (proc-ids st)
+;;          (procs st)))
+;;    (good-state-p
+;;     (handle-first-recovery-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory (disable good-proc-p
+;;                         remove-message-from-channel
+;;                         get-msg-from-channel
+;;                         update-proc-for-first-recovery-msg))))
+;; ;end target: good-state-p-of-handle-first-recovery-msg
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -3642,33 +3817,33 @@
     :induct
     (nbrs-to-from-consistent-p srcs dsts procs))))
 
-(defthm good-state-p-of-handle-non-first-recovery-msg
-  (implies
-   (and (good-state-p st)
+;; (defthm good-state-p-of-handle-non-first-recovery-msg
+;;   (implies
+;;    (and (good-state-p st)
 
-        ;; Valid receiver and sender.
-        (memberp i (proc-ids st))
-        (memberp j (proc-ids st))
-        (memberp j (nbrs-from (g i (procs st))))
+;;         ;; Valid receiver and sender.
+;;         (memberp i (proc-ids st))
+;;         (memberp j (proc-ids st))
+;;         (memberp j (nbrs-from (g i (procs st))))
 
-        ;; msg is the first message on channel j -> i.
-        (equal msg
-               (get-msg-from-channel j i (channels st)))
+;;         ;; msg is the first message on channel j -> i.
+;;         (equal msg
+;;                (get-msg-from-channel j i (channels st)))
 
-        ;; This is really a recovery message.
-        (equal (msg-type msg) :recovery)
+;;         ;; This is really a recovery message.
+;;         (equal (msg-type msg) :recovery)
 
-        ;; Non-first recovery-message case:
-        ;; receiver is already recovering or crashed, but not normal.
-        (not (equal (proc-status (g i (procs st))) :normal)))
-   (good-state-p
-    (handle-non-first-recovery-msg st i j msg)))
-  :hints
-  (("Goal"
-    :in-theory (disable good-proc-p
-                        remove-message-from-channel
-                        get-msg-from-channel
-                        update-proc-for-non-first-recovery-msg))))
+;;         ;; Non-first recovery-message case:
+;;         ;; receiver is already recovering or crashed, but not normal.
+;;         (not (equal (proc-status (g i (procs st))) :normal)))
+;;    (good-state-p
+;;     (handle-non-first-recovery-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory (disable good-proc-p
+;;                         remove-message-from-channel
+;;                         get-msg-from-channel
+;;                         update-proc-for-non-first-recovery-msg))))
 
 ;end target: good-state-p-of-handle-non-first-recovery-msg
 
@@ -3687,41 +3862,41 @@
 ;; invariant.  It also implies the receiver-side condition needed by the first
 ;; branch, because valid receiver i is a member of proc-ids.
 
-(defthm good-state-p-of-handle-recovery-msg
-  (implies
-   (and (good-state-p st)
+;; (defthm good-state-p-of-handle-recovery-msg
+;;   (implies
+;;    (and (good-state-p st)
 
-        ;; Valid receiver and sender.
-        (memberp i (proc-ids st))
-        (memberp j (proc-ids st))
-        (memberp j (nbrs-from (g i (procs st))))
+;;         ;; Valid receiver and sender.
+;;         (memberp i (proc-ids st))
+;;         (memberp j (proc-ids st))
+;;         (memberp j (nbrs-from (g i (procs st))))
 
-        ;; msg is the first message on channel j -> i.
-        (equal msg
-               (get-msg-from-channel j i (channels st)))
+;;         ;; msg is the first message on channel j -> i.
+;;         (equal msg
+;;                (get-msg-from-channel j i (channels st)))
 
-        ;; This is really a recovery message.
-        (equal (msg-type msg) :recovery)
+;;         ;; This is really a recovery message.
+;;         (equal (msg-type msg) :recovery)
 
-        ;; Strengthened recovery-message side condition:
-        ;; recovery sid must be known by every process.
-        (all-procs-have-snapshot-id-p
-         (sid msg)
-         (proc-ids st)
-         (procs st)))
-   (good-state-p
-    (handle-recovery-msg st i j msg)))
-  :hints
-  (("Goal"
-    :in-theory
-    (disable good-state-p
-             good-proc-p
-             handle-first-recovery-msg
-             handle-non-first-recovery-msg
-             remove-message-from-channel
-             get-msg-from-channel
-             update-proc-for-first-recovery-msg
-             update-proc-for-non-first-recovery-msg))))
+;;         ;; Strengthened recovery-message side condition:
+;;         ;; recovery sid must be known by every process.
+;;         (all-procs-have-snapshot-id-p
+;;          (sid msg)
+;;          (proc-ids st)
+;;          (procs st)))
+;;    (good-state-p
+;;     (handle-recovery-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory
+;;     (disable good-state-p
+;;              good-proc-p
+;;              handle-first-recovery-msg
+;;              handle-non-first-recovery-msg
+;;              remove-message-from-channel
+;;              get-msg-from-channel
+;;              update-proc-for-first-recovery-msg
+;;              update-proc-for-non-first-recovery-msg))))
 
 ;end target: good-state-p-of-handle-recovery-msg
 
@@ -3756,6 +3931,8 @@
             (update-proc-for-first-marker-msg p sid j))
          (g :counter p)))
 
+
+
 (defthm good-snapshots-p-of-update-proc-for-first-marker-msg
   (implies
    (and
@@ -3763,7 +3940,8 @@
                       p
                       (nbrs-from p)
                       ids)
-    (true-listp (nbrs-from p)))
+    (true-listp (nbrs-from p))
+    (uniquep (nbrs-from p)))
    (good-snapshots-p
     (snapshot-ids
      (update-proc-for-first-marker-msg p sid j))
@@ -4250,44 +4428,44 @@
     (nbrs-to-from-consistent-p srcs dsts procs))))
 
 
-(defthm good-state-p-of-handle-first-marker-msg
-  (implies
-   (and
-    (good-state-p st)
+;; (defthm good-state-p-of-handle-first-marker-msg
+;;   (implies
+;;    (and
+;;     (good-state-p st)
 
-    ;; valid receiver and sender
-    (memberp i (proc-ids st))
-    (memberp j (proc-ids st))
-    (memberp j (nbrs-from (g i (procs st))))
+;;     ;; valid receiver and sender
+;;     (memberp i (proc-ids st))
+;;     (memberp j (proc-ids st))
+;;     (memberp j (nbrs-from (g i (procs st))))
 
-    ;; msg is the head of channel j -> i
-    (equal msg
-           (get-msg-from-channel j i (channels st)))
+;;     ;; msg is the head of channel j -> i
+;;     (equal msg
+;;            (get-msg-from-channel j i (channels st)))
 
-    ;; marker-message case
-    (equal (msg-type msg) :marker)
+;;     ;; marker-message case
+;;     (equal (msg-type msg) :marker)
 
-    ;; first-marker case: receiver i does not yet know this sid
-    (not (memberp (sid msg)
-                  (snapshot-ids (g i (procs st)))))
+;;     ;; first-marker case: receiver i does not yet know this sid
+;;     (not (memberp (sid msg)
+;;                   (snapshot-ids (g i (procs st)))))
 
-    ;; the marker sid is already known somewhere in the system
-    (some-proc-has-snapshot-id-p
-     (sid msg)
-     (proc-ids st)
-     (procs st)))
-   (good-state-p
-    (handle-first-marker-msg st i j msg)))
-  :hints
-  (("Goal"
-    :in-theory
-    (disable good-proc-p
-             update-proc-for-first-marker-msg
-             get-msg-from-channel
-             remove-message-from-channel
-             send-msg-all-outgoing-channels
-             install-snapshot-entry
-             make-snapshot-entry))))
+;;     ;; the marker sid is already known somewhere in the system
+;;     (some-proc-has-snapshot-id-p
+;;      (sid msg)
+;;      (proc-ids st)
+;;      (procs st)))
+;;    (good-state-p
+;;     (handle-first-marker-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory
+;;     (disable good-proc-p
+;;              update-proc-for-first-marker-msg
+;;              get-msg-from-channel
+;;              remove-message-from-channel
+;;              send-msg-all-outgoing-channels
+;;              install-snapshot-entry
+;;              make-snapshot-entry))))
 
 
 
@@ -4734,82 +4912,82 @@
     (nbrs-to-from-consistent-p srcs dsts procs))))
 
 
-(defthm good-state-p-of-handle-non-first-marker-msg
-  (implies
-   (and
-    (good-state-p st)
+;; (defthm good-state-p-of-handle-non-first-marker-msg
+;;   (implies
+;;    (and
+;;     (good-state-p st)
 
-    ;; Valid receiver and sender.
-    (memberp i (proc-ids st))
-    (memberp j (proc-ids st))
-    (memberp j (nbrs-from (g i (procs st))))
+;;     ;; Valid receiver and sender.
+;;     (memberp i (proc-ids st))
+;;     (memberp j (proc-ids st))
+;;     (memberp j (nbrs-from (g i (procs st))))
 
-    ;; msg is the first message on channel j -> i.
-    (equal msg
-           (get-msg-from-channel j i (channels st)))
+;;     ;; msg is the first message on channel j -> i.
+;;     (equal msg
+;;            (get-msg-from-channel j i (channels st)))
 
-    ;; This is really a marker message.
-    (equal (msg-type msg) :marker)
+;;     ;; This is really a marker message.
+;;     (equal (msg-type msg) :marker)
 
-    ;; Non-first marker case:
-    ;; receiver i already knows this snapshot id.
-    (memberp (sid msg)
-             (snapshot-ids (g i (procs st)))))
-   (good-state-p
-    (handle-non-first-marker-msg st i j msg)))
-  :hints
-  (("Goal"
-    :in-theory
-    (disable good-proc-p
-             get-msg-from-channel
-             remove-message-from-channel
-             update-proc-for-non-first-marker-msg
-             set-snapshot-entry))))
-
-
-
-(defthm good-state-p-of-handle-marker-msg
-  (implies
-   (and
-    (good-state-p st)
-
-    ;; Valid receiver and sender.
-    (memberp i (proc-ids st))
-    (memberp j (proc-ids st))
-    (memberp j (nbrs-from (g i (procs st))))
-    ;; msg is the head of channel j -> i.
-    (equal msg
-           (get-msg-from-channel j i (channels st)))
-    ;; This is really a marker message.
-    (equal (msg-type msg) :marker)
-     (some-proc-has-snapshot-id-p
-      (sid msg)
-      (proc-ids st)
-      (procs st)))
-   (good-state-p
-    (handle-marker-msg st i j msg)))
-  :hints
-  (("Goal"
-    :cases ((memberp (sid msg)
-                     (snapshot-ids (g i (procs st)))))
-    :in-theory
-    (disable good-state-p
-             handle-first-marker-msg
-             handle-non-first-marker-msg))))
+;;     ;; Non-first marker case:
+;;     ;; receiver i already knows this snapshot id.
+;;     (memberp (sid msg)
+;;              (snapshot-ids (g i (procs st)))))
+;;    (good-state-p
+;;     (handle-non-first-marker-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory
+;;     (disable good-proc-p
+;;              get-msg-from-channel
+;;              remove-message-from-channel
+;;              update-proc-for-non-first-marker-msg
+;;              set-snapshot-entry))))
 
 
 
+;; (defthm good-state-p-of-handle-marker-msg
+;;   (implies
+;;    (and
+;;     (good-state-p st)
 
-(defthm good-state-p-of-ignore-normal-msg
-  (implies
-   (good-state-p st)
-   (good-state-p
-    (ignore-normal-msg st i j msg)))
-  :hints
-  (("Goal"
-    :in-theory
-    (disable remove-message-from-channel
-             good-proc-p))))
+;;     ;; Valid receiver and sender.
+;;     (memberp i (proc-ids st))
+;;     (memberp j (proc-ids st))
+;;     (memberp j (nbrs-from (g i (procs st))))
+;;     ;; msg is the head of channel j -> i.
+;;     (equal msg
+;;            (get-msg-from-channel j i (channels st)))
+;;     ;; This is really a marker message.
+;;     (equal (msg-type msg) :marker)
+;;      (some-proc-has-snapshot-id-p
+;;       (sid msg)
+;;       (proc-ids st)
+;;       (procs st)))
+;;    (good-state-p
+;;     (handle-marker-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :cases ((memberp (sid msg)
+;;                      (snapshot-ids (g i (procs st)))))
+;;     :in-theory
+;;     (disable good-state-p
+;;              handle-first-marker-msg
+;;              handle-non-first-marker-msg))))
+
+
+
+
+;; (defthm good-state-p-of-ignore-normal-msg
+;;   (implies
+;;    (good-state-p st)
+;;    (good-state-p
+;;     (ignore-normal-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :in-theory
+;;     (disable remove-message-from-channel
+;;              good-proc-p))))
 
 
 
@@ -5310,6 +5488,1515 @@
     (nbrs-to-from-consistent-p srcs dsts procs))))
 
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A local-state update does not change any process counter.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  counter-of-g-of-procs-after-local-state-update
+
+  (equal
+   (counter
+    (g k
+       (s i
+          (s :local-state
+             val
+             (g i procs))
+          procs)))
+
+   (counter
+    (g k procs)))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal k i)))))
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A local-state update does not change any process's snapshot-ID list.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  snapshot-ids-of-g-of-procs-after-local-state-update
+
+  (equal
+   (snapshot-ids
+    (g k
+       (s i
+          (s :local-state
+             val
+             (g i procs))
+          procs)))
+
+   (snapshot-ids
+    (g k procs)))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal k i)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; For one initiator, every stored SID retains the same comparison
+;; against that initiator's counter.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-stored-sids-for-initiator-preserved-by-local-state-update
+
+  (equal
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+
+    (s i
+       (s :local-state
+          val
+          (g i procs))
+       procs))
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    procs)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift the result across every initiator.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-initiators-stored-sids-preserved-by-local-state-update
+
+  (equal
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+
+    (s i
+       (s :local-state
+          val
+          (g i procs))
+       procs))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    procs)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Exact STEP-NORMAL process-table update.
+;;
+;; GOOD-STATE-P supplies the invariant before the transition. The generic
+;; equality above shows that the local-state-only process update preserves it.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-initiators-stored-sids-preserved-by-step-normal-procs-update
+
+  (implies
+   (good-state-p st)
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids st)
+    (proc-ids st)
+
+    (s i
+       (s :local-state
+
+          (update-local-state-normal
+           (local-state
+            (g i (procs st))))
+
+          (g i (procs st)))
+
+       (procs st)))))
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-step-normal
+
+  (implies
+   (and
+    (good-state-p st)
+    (memberp i (proc-ids st)))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids
+     (step-normal st i))
+
+    (proc-ids
+     (step-normal st i))
+
+    (procs
+     (step-normal st i)))))
+
+
+
+(defthm
+  all-stored-sids-for-initiator-have-smaller-counters-p-of-normal-msg-core
+
+  (implies
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    procs)
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (s i
+       (update-proc-for-normal-msg-core
+        (g i procs)
+        j
+        msg)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator
+     ids
+     procs))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal initiator i)
+     (equal (car ids) i)))
+
+   ;; Here INITIATOR has already become I.
+   ;; Split whether the current holder is also I.
+   ("Subgoal *1/2.2"
+    :cases
+    ((equal (car ids) i)))
+
+   ;; Here I has already become (CAR IDS).
+   ;; Split whether the initiator is that same process.
+   ("Subgoal *1/2.1"
+    :cases
+    ((equal initiator (car ids))))))
+
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-normal-msg-core
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    procs)
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (s i
+       (update-proc-for-normal-msg-core
+        (g i procs)
+        j
+        msg)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators
+     ids
+     procs)
+
+    :in-theory
+    (disable
+     update-proc-for-normal-msg-core))))
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-handle-normal-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids ids (procs st))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids ids
+    (procs
+     (handle-normal-msg st i j msg))))
+  :hints (("Goal"
+	   :in-theory (disable update-proc-for-normal-msg-core
+			       remove-message-from-channel))))
+
+
+
+
+(defthm
+  all-stored-sids-for-initiator-have-smaller-counters-p-of-first-recovery-msg
+
+  (implies
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator ids procs)
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (s i
+       (update-proc-for-first-recovery-msg
+        (g i procs)
+        sid
+        j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal initiator i)
+     (equal (car ids) i)))
+
+   ("Subgoal *1/2.2"
+    :cases
+    ((equal (car ids) i)))
+
+   ("Subgoal *1/2.1"
+    :cases
+    ((equal initiator (car ids))))))
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-first-recovery-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators ids procs)
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (s i
+       (update-proc-for-first-recovery-msg
+        (g i procs)
+        sid
+        j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators ids procs)
+
+    :in-theory
+    (disable
+     update-proc-for-first-recovery-msg
+     all-stored-sids-for-initiator-have-smaller-counters-p))))
+
+
+(defthm
+  all-stored-sids-for-initiator-have-smaller-counters-p-of-non-first-recovery-msg
+
+  (implies
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator ids procs)
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (s i
+       (update-proc-for-non-first-recovery-msg
+        (g i procs)
+        j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal initiator i)
+     (equal (car ids) i)))
+
+   ("Subgoal *1/2.2"
+    :cases
+    ((equal (car ids) i)))
+
+   ("Subgoal *1/2.1"
+    :cases
+    ((equal initiator (car ids))))))
+
+
+
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-non-first-recovery-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators ids procs)
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (s i
+       (update-proc-for-non-first-recovery-msg
+        (g i procs)
+        j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators ids procs)
+
+    :in-theory
+    (disable
+     update-proc-for-non-first-recovery-msg
+     all-stored-sids-for-initiator-have-smaller-counters-p))))
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-handle-non-first-recovery-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (procs st))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (procs
+     (handle-non-first-recovery-msg
+      st i j msg))))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-non-first-recovery-msg
+
+      (initiators initiators)
+      (ids ids)
+      (procs (procs st))
+      (i i)
+      (j j))))))
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-handle-first-recovery-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids ids (procs st))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids
+    ids
+    (procs
+     (handle-first-recovery-msg st i j msg))))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-first-recovery-msg
+
+      (initiators ids)
+      (ids ids)
+      (procs (procs st))
+      (i i)
+      (sid (sid msg))
+      (j j)))
+
+    :in-theory
+    (e/d
+     (handle-first-recovery-msg
+      update-proc-for-first-recovery-msg)
+
+     (all-initiators-stored-sids-have-smaller-counters-p)))))
+
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-handle-recovery-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids
+    ids
+    (procs st))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids
+    ids
+    (procs
+     (handle-recovery-msg st i j msg))))
+
+  :hints
+  (("Goal"
+    :in-theory 
+    (disable
+     handle-first-recovery-msg
+      handle-non-first-recovery-msg))))
+
+
+
+
+
+
+(defthm
+  all-stored-sids-for-initiator-have-smaller-counters-p-of-non-first-marker-msg
+
+  (implies
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    procs)
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (s i
+       (update-proc-for-non-first-marker-msg
+        (g i procs)
+        sid
+        j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator
+     ids
+     procs)
+
+    :in-theory
+    (disable
+     update-proc-for-non-first-marker-msg))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal initiator i)
+     (equal (car ids) i)))
+
+   ("Subgoal *1/2.2"
+    :cases
+    ((equal (car ids) i)))
+
+   ("Subgoal *1/2.1"
+    :cases
+    ((equal initiator (car ids))))))
+
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-update-proc-for-non-first-marker-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    procs)
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (s i
+       (update-proc-for-non-first-marker-msg
+        (g i procs)
+        sid
+        j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators
+     ids
+     procs)
+
+    :in-theory
+    (disable
+     update-proc-for-non-first-marker-msg
+     all-stored-sids-for-initiator-have-smaller-counters-p))
+
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      all-stored-sids-for-initiator-have-smaller-counters-p-of-non-first-marker-msg
+
+      (initiator
+       (car initiators))
+
+      (ids ids)
+      (procs procs)
+      (i i)
+      (sid sid)
+      (j j))))))
+
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-handle-non-first-marker-msg
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids ids (procs st))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids
+    ids
+    (procs
+     (handle-non-first-marker-msg
+      st i j msg))))
+
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     remove-message-from-channel
+     update-proc-for-non-first-marker-msg))))
+
+
+
+(defthm
+  stored-sids-for-initiator-memberp-implies-singleton
+
+  (implies
+   (and
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator counter sids)
+
+    (memberp sid sids))
+
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator counter (list sid))))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Extract the invariant for one holder.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-stored-sids-for-initiator-when-holder-memberp
+
+  (implies
+   (and
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs)
+
+    (memberp holder ids))
+
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+
+    (counter
+     (g initiator procs))
+
+    (snapshot-ids
+     (g holder procs))))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal holder (car ids))))))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; If SID occurs somewhere, the invariant establishes the required
+;; counter property for SID.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-stored-sids-and-some-proc-has-sid-implies-singleton
+
+  (implies
+   (and
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs)
+
+    (some-proc-has-snapshot-id-p
+     sid ids procs))
+
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    (counter
+     (g initiator procs))
+    (list sid))))
+
+
+
+(defthm
+  stored-sids-for-initiator-of-snoc
+
+  (equal
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator counter
+    (snoc sids sid))
+
+   (and
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator counter sids)
+
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator counter (list sid))))
+
+  :hints
+  (("Goal"
+    :induct (len sids))))
+
+
+(defthm
+  stored-sids-for-initiator-of-add-snapshot-id
+
+  (implies
+   (and
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator counter sids)
+
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator counter (list sid)))
+
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator counter
+    (add-snapshot-id sid sids))))
+
+
+
+(defthm
+  counter-of-g-of-s-update-proc-for-first-marker-msg
+
+  (equal
+   (counter
+    (g x
+       (s i
+          (update-proc-for-first-marker-msg
+           (g i procs)
+           sid
+           j)
+          procs)))
+
+   (counter
+    (g x procs)))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal x i)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; First-marker snapshot-ID update.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm snapshot-ids-of-update-proc-for-first-marker-msg
+  (equal
+   (snapshot-ids
+    (update-proc-for-first-marker-msg p sid j))
+
+   (add-snapshot-id sid
+                    (snapshot-ids p)))
+
+  :hints
+  (("Goal"
+    :in-theory
+    (enable update-proc-for-first-marker-msg
+            install-snapshot-entry))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Preserve the invariant for one initiator using a stable SID condition.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-stored-sids-for-initiator-of-first-marker-when-sid-small
+  (implies
+   (and
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs)
+
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator
+     (counter (g initiator procs))
+     (list sid)))
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (s i
+       (update-proc-for-first-marker-msg
+        (g i procs) sid j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs)
+
+    :in-theory
+    (disable update-proc-for-first-marker-msg))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal (car ids) i)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A SID already stored somewhere satisfies the stable SID condition.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-stored-sids-for-initiator-of-first-marker-when-sid-known
+  (implies
+   (and
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids procs)
+
+    (some-proc-has-snapshot-id-p
+     sid ids procs))
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (s i
+       (update-proc-for-first-marker-msg
+        (g i procs) sid j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :use
+    (all-stored-sids-and-some-proc-has-sid-implies-singleton
+     all-stored-sids-for-initiator-of-first-marker-when-sid-small)
+
+    :in-theory
+    (disable update-proc-for-first-marker-msg
+             some-proc-has-snapshot-id-p
+             all-stored-sids-for-initiator-have-smaller-counters-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift over all initiators.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-initiators-stored-sids-have-smaller-counters-p-of-first-marker-msg
+  (implies
+   (and
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators ids procs)
+
+    (some-proc-has-snapshot-id-p
+     sid ids procs))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (s i
+       (update-proc-for-first-marker-msg
+        (g i procs) sid j)
+       procs)))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators ids procs)
+
+    :in-theory
+    (disable update-proc-for-first-marker-msg
+             some-proc-has-snapshot-id-p
+             all-stored-sids-for-initiator-have-smaller-counters-p))
+
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      all-stored-sids-for-initiator-of-first-marker-when-sid-known
+      (initiator (car initiators)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift to HANDLE-FIRST-MARKER-MSG.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-initiators-stored-sids-have-smaller-counters-p-of-handle-first-marker-msg
+  (implies
+   (and
+    (all-initiators-stored-sids-have-smaller-counters-p
+     ids ids (procs st))
+
+    (some-proc-has-snapshot-id-p
+     (sid msg) ids (procs st)))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    ids
+    ids
+    (procs
+     (handle-first-marker-msg st i j msg))))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-first-marker-msg
+      (initiators ids)
+      (procs (procs st))
+      (sid (sid msg))))
+
+    :in-theory
+    (e/d
+     (handle-first-marker-msg
+      update-proc-for-first-marker-msg)
+
+     (remove-message-from-channel
+      send-msg-all-outgoing-channels
+      install-snapshot-entry
+      make-snapshot-entry
+      some-proc-has-snapshot-id-p
+      all-initiators-stored-sids-have-smaller-counters-p)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Extract the invariant from GOOD-STATE-P.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+  (implies
+   (good-state-p st)
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids st)
+    (proc-ids st)
+    (procs st)))
+
+  :hints
+  (("Goal"
+    :in-theory
+    (enable good-state-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Preserve the invariant through the marker dispatcher.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-initiators-stored-sids-have-smaller-counters-p-of-handle-marker-head
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i (proc-ids st))
+    (memberp j (proc-ids st))
+
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
+
+    (equal
+     (msg-type
+      (get-msg-from-channel j i (channels st)))
+     :marker))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids st)
+    (proc-ids st)
+    (procs
+     (handle-marker-msg
+      st i j
+      (get-msg-from-channel j i (channels st))))))
+
+  :hints
+  (("Goal"
+    :cases
+    ((memberp
+      (sid
+       (get-msg-from-channel j i (channels st)))
+      (snapshot-ids
+       (g i (procs st)))))
+
+    :use
+    (good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+     good-state-p-implies-marker-head-sid-known-somewhere
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-handle-first-marker-msg
+      (ids (proc-ids st))
+      (msg (get-msg-from-channel j i (channels st))))
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-handle-non-first-marker-msg
+      (ids (proc-ids st))
+      (msg (get-msg-from-channel j i (channels st)))))
+
+    :in-theory
+    (e/d
+     (handle-marker-msg)
+
+     (good-state-p
+      handle-first-marker-msg
+      handle-non-first-marker-msg
+      get-msg-from-channel
+      some-proc-has-snapshot-id-p
+      all-initiators-stored-sids-have-smaller-counters-p)))))
+
+
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-step-rcv
+
+  (implies
+   (and
+    (good-state-p st)
+
+    ;; Valid receiver and sender.
+    (memberp i
+             (proc-ids st))
+
+    (memberp j
+             (proc-ids st))
+
+    (memberp j
+             (nbrs-from
+              (g i (procs st)))))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids st)
+    (proc-ids st)
+    (procs
+     (step-rcv st i j))))
+  :hints (("Goal"
+        :in-theory
+    (disable
+     handle-normal-msg
+     get-msg-from-channel
+     handle-marker-msg
+     handle-recovery-msg))))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; STEP-RECOVER preserves the counter and snapshot-ID view of every process.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm counter-of-g-of-procs-of-step-recover
+  (equal
+   (counter
+    (g k
+       (procs
+        (step-recover st i))))
+
+   (counter
+    (g k (procs st))))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal k i))
+
+    :in-theory
+    (e/d
+     (step-recover)
+
+     (replay-channel-snapshots
+      send-msg-all-outgoing-channels
+      create-recovery-message)))))
+
+
+(defthm snapshot-ids-of-g-of-procs-of-step-recover
+  (equal
+   (snapshot-ids
+    (g k
+       (procs
+        (step-recover st i))))
+
+   (snapshot-ids
+    (g k (procs st))))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal k i))
+
+    :in-theory
+    (e/d
+     (step-recover)
+
+     (replay-channel-snapshots
+      send-msg-all-outgoing-channels
+      create-recovery-message)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Preserve the invariant for one initiator.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-stored-sids-for-initiator-have-smaller-counters-p-of-step-recover
+  (implies
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (procs st))
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (procs
+     (step-recover st i))))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator
+     ids
+     (procs st))
+
+    :in-theory
+    (disable step-recover))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift over all initiators.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-initiators-stored-sids-have-smaller-counters-p-preserved-by-step-recover
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (procs st))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (procs
+     (step-recover st i))))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators
+     ids
+     (procs st))
+
+    :in-theory
+    (disable
+     step-recover
+     all-stored-sids-for-initiator-have-smaller-counters-p))
+
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      all-stored-sids-for-initiator-have-smaller-counters-p-of-step-recover
+
+      (initiator
+       (car initiators)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; GOOD-STATE-P form used by the main good-state preservation proof.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-initiators-stored-sids-have-smaller-counters-p-of-step-recover
+  (implies
+   (and
+    (good-state-p st)
+    (memberp i (proc-ids st)))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids st)
+    (proc-ids st)
+    (procs
+     (step-recover st i))))
+
+  :hints
+  (("Goal"
+    :use
+    (good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-preserved-by-step-recover
+
+      (initiators
+       (proc-ids st))
+
+      (ids
+       (proc-ids st))))
+
+    :in-theory
+    (disable
+     good-state-p
+     step-recover
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; STEP-CHECKPOINT installs (I, old-counter) and increments I's counter.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;; Increasing an initiator counter preserves all previously stored SIDs.
+
+(defthm stored-sids-for-initiator-have-smaller-counters-p-of-increment
+  (implies
+   (and
+    (natp counter)
+
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator counter sids))
+
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    (+ 1 counter)
+    sids))
+
+  :hints
+  (("Goal"
+    :induct
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator counter sids))))
+
+
+;; The newly created SID is smaller than its initiator's incremented counter.
+;; For every other initiator, the SID belongs to a different process.
+
+(defthm stored-sids-for-initiator-of-new-checkpoint-sid
+  (implies
+   (natp counter)
+
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+
+    (if (equal initiator i)
+        (+ 1 counter)
+      other-counter)
+
+    (list
+     (list i counter))))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal initiator i)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Counter and snapshot-ID views after STEP-CHECKPOINT.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm counter-of-g-of-procs-of-step-checkpoint
+  (equal
+   (counter
+    (g k
+       (procs
+        (step-checkpoint st i))))
+
+   (if (equal k i)
+       (+ 1
+          (counter
+           (g i (procs st))))
+     (counter
+      (g k (procs st)))))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal k i))
+
+    :in-theory
+    (e/d
+     (step-checkpoint
+      install-snapshot-entry)
+
+     (make-snapshot-entry
+      create-marker-message
+      send-msg-all-outgoing-channels)))))
+
+
+(defthm snapshot-ids-of-g-of-procs-of-step-checkpoint
+  (equal
+   (snapshot-ids
+    (g k
+       (procs
+        (step-checkpoint st i))))
+
+   (if (equal k i)
+       (add-snapshot-id
+        (list i
+              (counter
+               (g i (procs st))))
+        (snapshot-ids
+         (g i (procs st))))
+
+     (snapshot-ids
+      (g k (procs st)))))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal k i))
+
+    :in-theory
+    (e/d
+     (step-checkpoint
+      install-snapshot-entry)
+
+     (make-snapshot-entry
+      create-marker-message
+      send-msg-all-outgoing-channels)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Preserve one holder's stored-SID condition.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm stored-sids-for-initiator-view-of-step-checkpoint
+  (implies
+   (and
+    (natp
+     (counter
+      (g i (procs st))))
+
+    (stored-sids-for-initiator-have-smaller-counters-p
+     initiator
+
+     (counter
+      (g initiator (procs st)))
+
+     (snapshot-ids
+      (g holder (procs st)))))
+
+   (stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+
+    (counter
+     (g initiator
+        (procs
+         (step-checkpoint st i))))
+
+    (snapshot-ids
+     (g holder
+        (procs
+         (step-checkpoint st i))))))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal initiator i)))
+
+   ("Subgoal 2"
+    :cases
+    ((equal holder i)))
+
+   ("Subgoal 1"
+    :cases
+    ((equal holder i)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift over every holder for one initiator.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-stored-sids-for-initiator-have-smaller-counters-p-of-step-checkpoint
+  (implies
+   (and
+    (natp
+     (counter
+      (g i (procs st))))
+
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator
+     ids
+     (procs st)))
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (procs
+     (step-checkpoint st i))))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator ids (procs st))
+
+    :in-theory
+    (disable
+     step-checkpoint
+     stored-sids-for-initiator-have-smaller-counters-p))
+
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      stored-sids-for-initiator-view-of-step-checkpoint
+      (holder (car ids)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift over all initiators.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-initiators-stored-sids-have-smaller-counters-p-preserved-by-step-checkpoint
+  (implies
+   (and
+    (natp
+     (counter
+      (g i (procs st))))
+
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators
+     ids
+     (procs st)))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (procs
+     (step-checkpoint st i))))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators ids (procs st))
+
+    :in-theory
+    (disable
+     step-checkpoint
+     all-stored-sids-for-initiator-have-smaller-counters-p))
+
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      all-stored-sids-for-initiator-have-smaller-counters-p-of-step-checkpoint
+      (initiator (car initiators)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A valid process in a good state has a natural-number counter.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-implies-natp-counter
+  (implies
+   (and
+    (good-state-p st)
+    (memberp i (proc-ids st)))
+
+   (natp
+    (counter
+     (g i (procs st)))))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      good-proc-p-of-g-when-good-procs-p
+
+      (ids
+       (proc-ids st))
+
+      (procs
+       (procs st))
+
+      (all-ids
+       (proc-ids st))))
+
+    :in-theory
+    (enable
+     good-state-p
+     good-proc-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; GOOD-STATE-P form.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm all-initiators-stored-sids-have-smaller-counters-p-of-step-checkpoint
+  (implies
+   (and
+    (good-state-p st)
+    (memberp i (proc-ids st)))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids st)
+    (proc-ids st)
+    (procs
+     (step-checkpoint st i))))
+
+  :hints
+  (("Goal"
+    :use
+    (good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+     good-state-p-implies-natp-counter
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-preserved-by-step-checkpoint
+
+      (initiators
+       (proc-ids st))
+
+      (ids
+       (proc-ids st))))
+
+    :in-theory
+    (disable
+     good-state-p
+     step-checkpoint
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 (defthm good-state-p-of-handle-normal-msg-core
   (implies
    (and
@@ -5339,33 +7026,438 @@
 
 
 
+(defthm good-state-p-of-ignore-normal-msg
+  (implies
+   (good-state-p st)
+
+   (good-state-p
+    (ignore-normal-msg st i j msg)))
+
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     remove-message-from-channel
+     good-proc-p
+
+     ;; IGNORE-NORMAL-MSG does not modify PROC-IDS or PROCS,
+     ;; so the old and new occurrences are syntactically equal.
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
 (defthm good-state-p-of-handle-normal-msg
   (implies
    (and
     (good-state-p st)
     (memberp i (proc-ids st))
     (memberp j (proc-ids st))
-    (memberp j (nbrs-from (g i (procs st))))
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
     (equal msg
-           (get-msg-from-channel j i (channels st)))
-    (equal (msg-type msg) :normal))
+           (get-msg-from-channel
+            j i (channels st)))
+    (equal (msg-type msg)
+           :normal))
+
    (good-state-p
     (handle-normal-msg st i j msg)))
+
   :hints
   (("Goal"
-    :cases ((and (equal (proc-status (g i (procs st))) :recovering)
-                 (memberp j
-                          (waiting-recovery-from
-                           (g i (procs st))))))
+    :cases
+    ((and
+      (equal
+       (proc-status
+        (g i (procs st)))
+       :recovering)
+
+      (memberp
+       j
+       (waiting-recovery-from
+        (g i (procs st))))))
+
+    :use
+    (good-state-p-of-ignore-normal-msg
+     good-state-p-of-handle-normal-msg-core)
+
     :in-theory
-    (disable good-state-p
-             good-proc-p
-             get-msg-from-channel
-             handle-normal-msg-core
-             ignore-normal-msg
-             update-proc-for-normal-msg-core
-             remove-message-from-channel
-             record-msg-in-snapshots))))
+    (disable
+     good-state-p
+     good-proc-p
+     get-msg-from-channel
+     handle-normal-msg-core
+     ignore-normal-msg
+     update-proc-for-normal-msg-core
+     remove-message-from-channel
+     record-msg-in-snapshots))))
+
+
+;; (defthm good-state-p-of-handle-normal-msg
+;;   (implies
+;;    (and
+;;     (good-state-p st)
+;;     (memberp i (proc-ids st))
+;;     (memberp j (proc-ids st))
+;;     (memberp j (nbrs-from (g i (procs st))))
+;;     (equal msg
+;;            (get-msg-from-channel j i (channels st)))
+;;     (equal (msg-type msg) :normal))
+;;    (good-state-p
+;;     (handle-normal-msg st i j msg)))
+;;   :hints
+;;   (("Goal"
+;;     :cases ((and (equal (proc-status (g i (procs st))) :recovering)
+;;                  (memberp j
+;;                           (waiting-recovery-from
+;;                            (g i (procs st))))))
+;;     :in-theory
+;;     (disable good-state-p
+;;              good-proc-p
+;;              get-msg-from-channel
+;;              handle-normal-msg-core
+;;              ignore-normal-msg
+;;              update-proc-for-normal-msg-core
+;;              remove-message-from-channel
+;;              record-msg-in-snapshots))))
+
+
+
+
+
+
+
+
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Complete first-marker preservation, including the new counter invariant.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-handle-first-marker-msg-with-counter-invariant
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i (proc-ids st))
+    (memberp j (proc-ids st))
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
+
+    (equal msg
+           (get-msg-from-channel j i (channels st)))
+
+    (equal (msg-type msg) :marker)
+
+    (not
+     (memberp
+      (sid msg)
+      (snapshot-ids
+       (g i (procs st)))))
+
+    (some-proc-has-snapshot-id-p
+     (sid msg)
+     (proc-ids st)
+     (procs st)))
+
+   (good-state-p
+    (handle-first-marker-msg st i j msg)))
+
+  :hints
+  (("Goal"
+    :use
+    (good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-handle-first-marker-msg
+      (ids (proc-ids st))))
+
+    :in-theory
+    (disable
+     good-proc-p
+     update-proc-for-first-marker-msg
+     get-msg-from-channel
+     remove-message-from-channel
+     send-msg-all-outgoing-channels
+     install-snapshot-entry
+     make-snapshot-entry
+     some-proc-has-snapshot-id-p
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Complete non-first-marker preservation, including the new invariant.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-handle-non-first-marker-msg-with-counter-invariant
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i (proc-ids st))
+    (memberp j (proc-ids st))
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
+
+    (equal msg
+           (get-msg-from-channel j i (channels st)))
+
+    (equal (msg-type msg) :marker)
+
+    (memberp
+     (sid msg)
+     (snapshot-ids
+      (g i (procs st)))))
+
+   (good-state-p
+    (handle-non-first-marker-msg st i j msg)))
+
+  :hints
+  (("Goal"
+    :use
+    (good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-handle-non-first-marker-msg
+      (ids (proc-ids st))))
+
+    :in-theory
+    (disable
+     good-proc-p
+     get-msg-from-channel
+     remove-message-from-channel
+     update-proc-for-non-first-marker-msg
+     set-snapshot-entry
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Re-admit the missing marker dispatcher theorem.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-handle-marker-msg
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i (proc-ids st))
+    (memberp j (proc-ids st))
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
+
+    (equal msg
+           (get-msg-from-channel j i (channels st)))
+
+    (equal (msg-type msg) :marker)
+
+    (some-proc-has-snapshot-id-p
+     (sid msg)
+     (proc-ids st)
+     (procs st)))
+
+   (good-state-p
+    (handle-marker-msg st i j msg)))
+
+  :hints
+  (("Goal"
+    :cases
+    ((memberp
+      (sid msg)
+      (snapshot-ids
+       (g i (procs st)))))
+
+    :use
+    (good-state-p-of-handle-first-marker-msg-with-counter-invariant
+     good-state-p-of-handle-non-first-marker-msg-with-counter-invariant)
+
+    :in-theory
+    (disable
+     good-state-p
+     handle-first-marker-msg
+     handle-non-first-marker-msg
+     some-proc-has-snapshot-id-p))))
+
+
+
+
+
+
+
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Complete first-recovery preservation with the new counter invariant.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-handle-first-recovery-msg-with-counter-invariant
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i (proc-ids st))
+    (memberp j (proc-ids st))
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
+
+    (equal msg
+           (get-msg-from-channel j i (channels st)))
+
+    (equal (msg-type msg) :recovery)
+
+    (equal
+     (proc-status
+      (g i (procs st)))
+     :normal)
+
+    (memberp
+     (sid msg)
+     (snapshot-ids
+      (g i (procs st))))
+
+    (all-procs-have-snapshot-id-p
+     (sid msg)
+     (proc-ids st)
+     (procs st)))
+
+   (good-state-p
+    (handle-first-recovery-msg st i j msg)))
+
+  :hints
+  (("Goal"
+    :use
+    (good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-handle-first-recovery-msg
+      (ids (proc-ids st))))
+
+    :in-theory
+    (disable
+     good-proc-p
+     remove-message-from-channel
+     get-msg-from-channel
+     update-proc-for-first-recovery-msg
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Complete non-first-recovery preservation with the new invariant.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-handle-non-first-recovery-msg-with-counter-invariant
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i (proc-ids st))
+    (memberp j (proc-ids st))
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
+
+    (equal msg
+           (get-msg-from-channel j i (channels st)))
+
+    (equal (msg-type msg) :recovery)
+
+    (not
+     (equal
+      (proc-status
+       (g i (procs st)))
+      :normal)))
+
+   (good-state-p
+    (handle-non-first-recovery-msg st i j msg)))
+
+  :hints
+  (("Goal"
+    :use
+    (good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-handle-non-first-recovery-msg
+      (initiators (proc-ids st))
+      (ids (proc-ids st))))
+
+    :in-theory
+    (disable
+     good-proc-p
+     remove-message-from-channel
+     get-msg-from-channel
+     update-proc-for-non-first-recovery-msg
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Re-admit the recovery dispatcher theorem.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-handle-recovery-msg
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i (proc-ids st))
+    (memberp j (proc-ids st))
+    (memberp j
+             (nbrs-from
+              (g i (procs st))))
+
+    (equal msg
+           (get-msg-from-channel j i (channels st)))
+
+    (equal (msg-type msg) :recovery)
+
+    (all-procs-have-snapshot-id-p
+     (sid msg)
+     (proc-ids st)
+     (procs st)))
+
+   (good-state-p
+    (handle-recovery-msg st i j msg)))
+
+  :hints
+  (("Goal"
+    :cases
+    ((equal
+      (proc-status
+       (g i (procs st)))
+      :normal))
+
+    :use
+    ((:instance
+      all-procs-have-snapshot-id-p-when-memberp
+      (sid (sid msg))
+      (ids (proc-ids st))
+      (procs (procs st)))
+
+     good-state-p-of-handle-first-recovery-msg-with-counter-invariant
+
+     good-state-p-of-handle-non-first-recovery-msg-with-counter-invariant)
+
+    :in-theory
+    (disable
+     good-state-p
+     handle-first-recovery-msg
+     handle-non-first-recovery-msg
+     all-procs-have-snapshot-id-p))))
+
+
+
+
+
+
+
 
 
 
@@ -5404,58 +7496,367 @@
 
 
 
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Re-admit the full :START-CHECKPOINT system-step theorem.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-system-step-start-checkpoint
+  (implies
+   (and
+    (good-state-p st)
+
+    (equal
+     (ttype input)
+     :start-checkpoint)
+
+    (memberp
+     (pid input)
+     (proc-ids st)))
+
+   (good-state-p
+    (system-step st input)))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-step-checkpoint
+      (i (pid input))))
+
+    :in-theory
+    (e/d
+     (system-step)
+
+     (good-proc-p
+      start-checkpoint-helper
+      make-snapshot-entry
+      install-snapshot-entry
+      create-marker-message
+      all-initiators-stored-sids-have-smaller-counters-p)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; STEP-CHECKPOINT wrapper.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (defthm good-state-p-of-step-checkpoint
   (implies
    (and
     (good-state-p st)
     (memberp i (proc-ids st)))
+
    (good-state-p
     (step-checkpoint st i)))
+
   :hints
   (("Goal"
     :use
-    ((:instance good-state-p-of-system-step-start-checkpoint
-                (input (>_ :ttype :start-checkpoint
-                           :pid i))))
+    ((:instance
+      good-state-p-of-system-step-start-checkpoint
+
+      (input
+       (>_ :ttype :start-checkpoint
+           :pid i)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Re-admit the full :RECOVER system-step theorem.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-system-step-recover
+  (implies
+   (and
+    (good-state-p st)
+
+    (equal
+     (ttype input)
+     :recover)
+
+    (memberp
+     (pid input)
+     (proc-ids st))
+
+    (all-procs-have-snapshot-id-p
+     (car
+      (snapshot-ids
+       (g (pid input)
+          (procs st))))
+     (proc-ids st)
+     (procs st)))
+
+   (good-state-p
+    (system-step st input)))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-step-recover
+      (i (pid input))))
+
     :in-theory
-    (enable system-step))))
+    (e/d
+     (system-step)
+
+     (good-proc-p
+      start-recovery-helper
+      create-recovery-message
+      all-initiators-stored-sids-have-smaller-counters-p)))))
 
 
 (defthm good-state-p-of-step-recover
   (implies
    (and
     (good-state-p st)
-    (memberp i (proc-ids st))
+
+    (memberp i
+             (proc-ids st))
+
     (all-procs-have-snapshot-id-p
-     (car (snapshot-ids (g i (procs st))))
+     (car
+      (snapshot-ids
+       (g i (procs st))))
      (proc-ids st)
      (procs st)))
+
    (good-state-p
     (step-recover st i)))
+
   :hints
   (("Goal"
     :use
-    ((:instance good-state-p-of-system-step-recover
-                (input (>_ :ttype :recover
-                           :pid i))))
+    ((:instance
+      good-state-p-of-system-step-recover
+
+      (input
+       (>_ :ttype :recover
+           :pid i)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Re-admit the full :NORMAL system-step theorem.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-system-step-normal
+  (implies
+   (and
+    (good-state-p st)
+
+    (equal
+     (ttype input)
+     :normal)
+
+    (memberp
+     (pid input)
+     (proc-ids st)))
+
+   (good-state-p
+    (system-step st input)))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-step-normal
+      (i (pid input))))
+
     :in-theory
-    (enable system-step))))
+    (e/d
+     (system-step)
+
+     (all-initiators-stored-sids-have-smaller-counters-p)))))
+
 
 (defthm good-state-p-of-step-normal
   (implies
    (and
     (good-state-p st)
     (memberp i (proc-ids st)))
+
    (good-state-p
     (step-normal st i)))
+
   :hints
   (("Goal"
     :use
-    ((:instance good-state-p-of-system-step-normal
-                (input (>_ :ttype :normal
-                           :pid i))))
+    ((:instance
+      good-state-p-of-system-step-normal
+
+      (input
+       (>_ :ttype :normal
+           :pid i)))))))
+
+
+
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; STEP-CRASH changes only PROC-STATUS.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm counter-of-g-of-procs-of-step-crash
+  (equal
+   (counter
+    (g k
+       (procs
+        (step-crash st i))))
+   (counter
+    (g k (procs st))))
+  :hints
+  (("Goal"
+    :cases ((equal k i))
+    :in-theory (enable step-crash))))
+
+
+(defthm snapshot-ids-of-g-of-procs-of-step-crash
+  (equal
+   (snapshot-ids
+    (g k
+       (procs
+        (step-crash st i))))
+   (snapshot-ids
+    (g k (procs st))))
+  :hints
+  (("Goal"
+    :cases ((equal k i))
+    :in-theory (enable step-crash))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Preserve the property for one initiator.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-stored-sids-for-initiator-have-smaller-counters-p-of-step-crash
+
+  (implies
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (procs st))
+
+   (all-stored-sids-for-initiator-have-smaller-counters-p
+    initiator
+    ids
+    (procs
+     (step-crash st i))))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-stored-sids-for-initiator-have-smaller-counters-p
+     initiator
+     ids
+     (procs st))
+
     :in-theory
-    (enable system-step))))
+    (disable step-crash))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lift preservation over all initiators.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  all-initiators-stored-sids-have-smaller-counters-p-of-step-crash
+
+  (implies
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (procs st))
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    initiators
+    ids
+    (procs
+     (step-crash st i))))
+
+  :hints
+  (("Goal"
+    :induct
+    (all-initiators-stored-sids-have-smaller-counters-p
+     initiators
+     ids
+     (procs st))
+
+    :in-theory
+    (disable
+     step-crash
+     all-stored-sids-for-initiator-have-smaller-counters-p))
+
+   ("Subgoal *1/2"
+    :use
+    ((:instance
+      all-stored-sids-for-initiator-have-smaller-counters-p-of-step-crash
+      (initiator (car initiators)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; GOOD-STATE-P supplies the old invariant.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm
+  good-state-p-implies-invariant-of-step-crash
+
+  (implies
+   (good-state-p st)
+
+   (all-initiators-stored-sids-have-smaller-counters-p
+    (proc-ids st)
+    (proc-ids st)
+    (procs
+     (step-crash st i))))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      good-state-p-implies-all-initiators-stored-sids-have-smaller-counters-p)
+
+     (:instance
+      all-initiators-stored-sids-have-smaller-counters-p-of-step-crash
+      (initiators (proc-ids st))
+      (ids        (proc-ids st))))
+
+    :in-theory
+    (disable
+     good-state-p
+     step-crash
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Restore GOOD-STATE-P preservation for STEP-CRASH.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defthm good-state-p-of-step-crash
+  (implies
+   (and
+    (good-state-p st)
+    (memberp i (proc-ids st)))
+
+   (good-state-p
+    (step-crash st i)))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      good-state-p-implies-invariant-of-step-crash))
+
+    :in-theory
+    (disable
+     all-initiators-stored-sids-have-smaller-counters-p))))
+
+
+
 
 
 (defthm good-state-p-of-system-step-when-legal-inputp
