@@ -1,61 +1,38 @@
-;start setup
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Book setup
-;; Load the protocol model and invariant books used by the equivalence
-;; proofs.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; MIT License
+;
+; Copyright (c) 2026 Mohammad Bin Monjil and Sandip Ray
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
+
 (in-package "ACL2")
-
 (include-book "model")
-
 (include-book "good_state_inv")
-
-;; Keep proof-support rewrite rules private to this book.  The five non-local
-;; DEFTHM events below are the process-equivalence interface used by REORDER.
-(defmacro channel-equivalence-local-defthm (&rest args)
-  (list 'local (cons 'defthm args)))
 
 ;end setup
 
 
 ;start definitions: imp/spec equivalence predicates
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Imp/spec equivalence definitions
-;; The spec state keeps only application-visible process information.
-;; Implementation channels may contain protocol messages, but spec channels
-;; must match the projection of implementation channels after ignoring non-
-;; normal messages.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defun proc-equivalent-p (imp-p spec-p)
-  ;; Spec process keeps only the application-visible process fields.
-  (and
-   (equal (local-state imp-p)
-          (local-state spec-p))
-   (equal (nbrs-to imp-p)
-          (nbrs-to spec-p))
-   (equal (nbrs-from imp-p)
-          (nbrs-from spec-p))))
 
-(defun procs-equivalent-p (ids imp-procs spec-procs)
-  ;; Check process equivalence for every process id.
-  (if (endp ids)
-      t
-    (and
-     (proc-equivalent-p
-      (g (first ids) imp-procs)
-      (g (first ids) spec-procs))
-     (procs-equivalent-p
-      (rest ids)
-      imp-procs
-      spec-procs))))
 
 (defun imp-spec-channel-msgs-equivalent-p (imp-msgs spec-msgs)
   ;; SPEC-MSGS should be exactly the normal-message projection of IMP-MSGS.
-  ;;
-  ;; While scanning the implementation channel:
-  ;;   - marker/recovery/non-normal messages are skipped;
-  ;;   - normal messages must match the current head of the spec channel;
-  ;;   - the spec-channel pointer advances only when a normal msg is matched.
   (if (endp imp-msgs)
       (endp spec-msgs)
     (let ((msg (first imp-msgs)))
@@ -114,9 +91,6 @@
 
 (defun imp-spec-equivalent-p (imp-st spec-st)
   ;; Full implementation/spec equivalence:
-  ;;   1. same process ids;
-  ;;   2. same visible process fields;
-  ;;   3. spec channels are the normal-message projection of imp channels.
   (let ((ids (proc-ids imp-st)))
     (and
      (equal (proc-ids imp-st)
@@ -140,13 +114,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (encapsulate ()
 
-(channel-equivalence-local-defthm proc-ids-equal-when-imp-spec-equivalent-p
+(local-defthm proc-ids-equal-when-imp-spec-equivalent-p
   (implies
    (imp-spec-equivalent-p imp-st spec-st)
    (equal (proc-ids imp-st)
           (proc-ids spec-st))))
 
-(channel-equivalence-local-defthm proc-equivalent-p-implies-local-state-equal
+(local-defthm proc-equivalent-p-implies-local-state-equal
   (implies
    (proc-equivalent-p imp-p spec-p)
    (equal
@@ -157,12 +131,8 @@
 
 
 ;start normal-step process update lemmas
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Normal-step process update lemmas
-;; A normal local step updates the same visible local-state field on both
-;; sides. Neighbor fields are unchanged, so process equivalence is preserved.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-equivalent-p-of-same-local-state-update
+;; Normal-step process update lemmas A normal local step updates the same visible local-state field on both sides.
+(local-defthm proc-equivalent-p-of-same-local-state-update
   (implies
    (proc-equivalent-p imp-p spec-p)
    (proc-equivalent-p
@@ -185,7 +155,7 @@
           (g i spec-procs))
        spec-procs))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-normal-local-state-update
+(local-defthm procs-equivalent-p-of-normal-local-state-update
   (implies
    (and
     (procs-equivalent-p ids imp-procs spec-procs)
@@ -215,12 +185,7 @@
 
 
 ;start normal-step send-compute channel lemmas
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Normal-step send-compute channel lemmas
-;; send-compute-message appends the same normal messages to implementation
-;; and spec channels. Therefore channel-message equivalence lifts from one
-;; channel, to incoming channels, to all channels.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Normal-step send-compute channel lemmas send-compute-message appends the same normal messages to implementation and spec channels.
 (defun send-compute-message-pair-induct
     (local sender nbrs imp-channels spec-channels)
   (if (endp nbrs)
@@ -251,7 +216,7 @@
        imp-channels
        spec-channels))))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-create-compute-message
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-create-compute-message
   (implies
    (imp-spec-channel-msgs-equivalent-p imp-msgs spec-msgs)
    (imp-spec-channel-msgs-equivalent-p
@@ -260,7 +225,7 @@
     (snoc spec-msgs
           (create-compute-message local nbr)))))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-send-compute-message
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-send-compute-message
   (implies
    (imp-spec-channel-msgs-equivalent-p
     (channel-state src dst imp-channels)
@@ -280,7 +245,7 @@
     (send-compute-message-pair-induct
      local sender nbrs imp-channels spec-channels))))
 
-(channel-equivalence-local-defthm incoming-channels-equivalent-for-proc-p-of-send-compute-message-same
+(local-defthm incoming-channels-equivalent-for-proc-p-of-send-compute-message-same
   (implies
    (incoming-channels-equivalent-for-proc-p
     srcs dst imp-channels spec-channels)
@@ -290,7 +255,7 @@
     (send-compute-message local sender nbrs imp-channels)
     (send-compute-message local sender nbrs spec-channels))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-send-compute-message-same
+(local-defthm imp-spec-channels-equivalent-p-aux-of-send-compute-message-same
   (implies
    (imp-spec-channels-equivalent-p-aux
     ids imp-procs imp-channels spec-channels)
@@ -300,7 +265,7 @@
     (send-compute-message local sender nbrs imp-channels)
     (send-compute-message local sender nbrs spec-channels))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-local-state-update-procs
+(local-defthm imp-spec-channels-equivalent-p-aux-of-local-state-update-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -320,11 +285,7 @@
 
 
 ;start projection facts from process equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Projection facts from process equivalence
-;; When process tables are equivalent, the spec process has the same visible
-;; fields as the implementation process.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Projection facts from process equivalence When process tables are equivalent, the spec process has the same visible fields as the implementation process.
 (defthm local-state-of-spec-proc-when-procs-equivalent-p
   (implies
    (and
@@ -347,12 +308,8 @@
 
 
 ;start main theorem: normal step preserves full equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Main theorem: normal step preserves full equivalence
-;; Implementation and spec both perform the same normal local-state update
-;; and send the same compute messages.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-equivalent-p-of-step-normal
+;; Main theorem: normal step preserves full equivalence Implementation and spec both perform the same normal local-state update and send the same compute messages.
+(local-defthm imp-spec-equivalent-p-of-step-normal
   (implies
    (and
     (good-state-p imp-st)
@@ -381,7 +338,7 @@
 ;; Starting a checkpoint only changes implementation snapshot metadata. It
 ;; does not change the visible fields used by proc-equivalent-p.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-equivalent-p-of-start-checkpoint-helper-left-same-proc
+(local-defthm proc-equivalent-p-of-start-checkpoint-helper-left-same-proc
   (implies
    (proc-equivalent-p (g i imp-procs)
                       (g i spec-procs))
@@ -389,7 +346,7 @@
     (g i (start-checkpoint-helper imp-procs i))
     (g i spec-procs))))
 
-(channel-equivalence-local-defthm proc-equivalent-p-of-start-checkpoint-helper-left-diff-proc
+(local-defthm proc-equivalent-p-of-start-checkpoint-helper-left-diff-proc
   (implies
    (and
     (not (equal k i))
@@ -399,7 +356,7 @@
     (g k (start-checkpoint-helper imp-procs i))
     (g k spec-procs))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-start-checkpoint-helper-left
+(local-defthm procs-equivalent-p-of-start-checkpoint-helper-left
   (implies
    (procs-equivalent-p ids imp-procs spec-procs)
    (procs-equivalent-p
@@ -425,7 +382,7 @@
 ;; Markers are non-normal, so they are ignored by the channel projection
 ;; relation.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-create-marker-message-left
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-create-marker-message-left
   (implies
    (imp-spec-channel-msgs-equivalent-p imp-msgs spec-msgs)
    (imp-spec-channel-msgs-equivalent-p
@@ -433,7 +390,7 @@
           (create-marker-message local sid))
     spec-msgs)))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-send-marker-one-channel
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-send-marker-one-channel
   (implies
    (imp-spec-channel-msgs-equivalent-p
     (channel-state src dst imp-channels)
@@ -454,7 +411,7 @@
     :in-theory
     (disable create-marker-message))))
 
-(channel-equivalence-local-defthm incoming-channels-equivalent-for-proc-p-of-send-marker-left
+(local-defthm incoming-channels-equivalent-for-proc-p-of-send-marker-left
   (implies
    (incoming-channels-equivalent-for-proc-p
     srcs dst imp-channels spec-channels)
@@ -475,7 +432,7 @@
     :in-theory
     (disable create-marker-message send-msg-all-outgoing-channels))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-send-marker-left
+(local-defthm imp-spec-channels-equivalent-p-aux-of-send-marker-left
   (implies
    (imp-spec-channels-equivalent-p-aux
     ids imp-procs imp-channels spec-channels)
@@ -491,12 +448,10 @@
   :hints
   (("Goal"
     ;; :induct
-    ;; (imp-spec-channels-equivalent-p-aux
-    ;;  ids imp-procs imp-channels spec-channels)
     :in-theory
     (disable create-marker-message))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-start-checkpoint-helper-procs
+(local-defthm imp-spec-channels-equivalent-p-aux-of-start-checkpoint-helper-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -515,12 +470,8 @@
 
 
 ;start main theorem: checkpoint step preserves full equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Main theorem: checkpoint step preserves full equivalence
-;; The implementation may install checkpoint metadata and send markers, while
-;; the spec state remains unchanged.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-equivalent-p-of-step-checkpoint
+;; Main theorem: checkpoint step preserves full equivalence The implementation may install checkpoint metadata and send markers, while the spec state remains unchanged.
+(local-defthm imp-spec-equivalent-p-of-step-checkpoint
   (implies
    (and
     (good-state-p imp-st)
@@ -546,13 +497,8 @@
 
 
 ;start recovery-start channel-equivalence lemmas
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Recovery-start channel-equivalence lemmas
-;; Starting recovery may change implementation recovery metadata/local state,
-;; so this block proves only channel equivalence. Recovery messages are non-
-;; normal and do not affect the spec channel projection.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-create-recovery-message-left
+;; Recovery-start channel-equivalence lemmas Starting recovery may change implementation recovery metadata/local state, so this block proves only channel equivalence.
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-create-recovery-message-left
   (implies
    (imp-spec-channel-msgs-equivalent-p imp-msgs spec-msgs)
    (imp-spec-channel-msgs-equivalent-p
@@ -560,7 +506,7 @@
           (create-recovery-message local sid))
     spec-msgs)))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-send-recovery-message-left
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-send-recovery-message-left
   (implies
    (imp-spec-channel-msgs-equivalent-p
     (channel-state src dst imp-channels)
@@ -579,7 +525,7 @@
     :in-theory
     (disable create-recovery-message))))
 
-(channel-equivalence-local-defthm incoming-channels-equivalent-for-proc-p-of-send-recovery-message-left
+(local-defthm incoming-channels-equivalent-for-proc-p-of-send-recovery-message-left
   (implies
    (incoming-channels-equivalent-for-proc-p
     srcs dst imp-channels spec-channels)
@@ -597,7 +543,7 @@
     :in-theory
     (disable create-recovery-message))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-send-recovery-message-left
+(local-defthm imp-spec-channels-equivalent-p-aux-of-send-recovery-message-left
   (implies
    (imp-spec-channels-equivalent-p-aux
     ids imp-procs imp-channels spec-channels)
@@ -618,7 +564,7 @@
     :in-theory
     (disable create-recovery-message))))
 
-(channel-equivalence-local-defthm nbrs-from-of-start-recovery-helper
+(local-defthm nbrs-from-of-start-recovery-helper
   (equal
    (nbrs-from
     (g k
@@ -626,7 +572,7 @@
    (nbrs-from
     (g k procs))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-start-recovery-helper-procs
+(local-defthm imp-spec-channels-equivalent-p-aux-of-start-recovery-helper-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -646,7 +592,7 @@
     :in-theory
     (disable start-recovery-helper))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-of-step-recover
+(local-defthm imp-spec-channels-equivalent-p-of-step-recover
   (implies
    (and
     (good-state-p imp-st)
@@ -677,19 +623,19 @@
 ;; Marker receive: proc-id preservation
 ;; Marker handlers do not create or remove processes.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-ids-of-handle-first-marker-msg
+(local-defthm proc-ids-of-handle-first-marker-msg
   (equal
    (proc-ids
     (handle-first-marker-msg st i j msg))
    (proc-ids st)))
 
-(channel-equivalence-local-defthm proc-ids-of-handle-non-first-marker-msg
+(local-defthm proc-ids-of-handle-non-first-marker-msg
   (equal
    (proc-ids
     (handle-non-first-marker-msg st i j msg))
    (proc-ids st)))
 
-(channel-equivalence-local-defthm proc-ids-of-handle-marker-msg
+(local-defthm proc-ids-of-handle-marker-msg
   (equal
    (proc-ids
     (handle-marker-msg st i j msg))
@@ -699,19 +645,15 @@
 
 
 ;start non-first marker receive: process equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Non-first marker receive: process equivalence
-;; Non-first marker handling updates only snapshot bookkeeping for the
-;; receiver. Visible process fields remain equivalent to the spec process.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-equivalent-p-of-update-proc-for-non-first-marker-msg-left
+;; Non-first marker receive: process equivalence Non-first marker handling updates only snapshot bookkeeping for the receiver.
+(local-defthm proc-equivalent-p-of-update-proc-for-non-first-marker-msg-left
   (implies
    (proc-equivalent-p imp-p spec-p)
    (proc-equivalent-p
     (update-proc-for-non-first-marker-msg imp-p sid j)
     spec-p)))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-set-non-first-marker-proc-left
+(local-defthm procs-equivalent-p-of-set-non-first-marker-proc-left
   (implies
    (and
     (procs-equivalent-p ids imp-procs spec-procs)
@@ -733,7 +675,7 @@
    ("Subgoal *1/2"
     :cases ((equal i (car ids))))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-handle-non-first-marker-msg-left
+(local-defthm procs-equivalent-p-of-handle-non-first-marker-msg-left
   (implies
    (and
     (procs-equivalent-p ids
@@ -750,13 +692,8 @@
 
 
 ;start non-first marker receive: channel equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Non-first marker receive: channel equivalence
-;; The handler removes a marker from j -> i. Since the removed message is
-;; non-normal, the normal-message projection of implementation channels is
-;; unchanged.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-handle-non-first-marker-msg-procs
+;; Non-first marker receive: channel equivalence The handler removes a marker from j -> i.
+(local-defthm imp-spec-channels-equivalent-p-aux-of-handle-non-first-marker-msg-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -771,13 +708,13 @@
     imp-channels
     spec-channels)))
 
-(channel-equivalence-local-defthm channels-of-handle-non-first-marker-msg
+(local-defthm channels-of-handle-non-first-marker-msg
   (equal
    (channels
     (handle-non-first-marker-msg st i j msg))
    (remove-message-from-channel j i (channels st))))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-cdr-left-when-head-non-normal
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-cdr-left-when-head-non-normal
   (implies
    (and
     (imp-spec-channel-msgs-equivalent-p imp-msgs spec-msgs)
@@ -787,7 +724,7 @@
     (rest imp-msgs)
     spec-msgs)))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-remove-message-from-channel-left
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-remove-message-from-channel-left
   (implies
    (and
     (imp-spec-channel-msgs-equivalent-p
@@ -815,7 +752,7 @@
     :cases ((and (equal src rm-src)
                  (equal dst rm-dst))))))
 
-(channel-equivalence-local-defthm incoming-channels-equivalent-for-proc-p-of-remove-message-from-channel-left
+(local-defthm incoming-channels-equivalent-for-proc-p-of-remove-message-from-channel-left
   (implies
    (and
     (incoming-channels-equivalent-for-proc-p
@@ -836,7 +773,7 @@
     (remove-message-from-channel rm-src rm-dst imp-channels)
     spec-channels)))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-remove-message-from-channel-left
+(local-defthm imp-spec-channels-equivalent-p-aux-of-remove-message-from-channel-left
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -867,7 +804,7 @@
      remove-message-from-channel
      incoming-channels-equivalent-for-proc-p))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-channels-handle-non-first-marker-msg-left
+(local-defthm imp-spec-channels-equivalent-p-aux-of-channels-handle-non-first-marker-msg-left
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -906,19 +843,15 @@
 
 
 ;start first marker receive: process equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; First marker receive: process equivalence
-;; First marker handling creates snapshot metadata but leaves local-state and
-;; neighbor fields unchanged.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-equivalent-p-of-update-proc-for-first-marker-msg-left
+;; First marker receive: process equivalence First marker handling creates snapshot metadata but leaves local-state and neighbor fields unchanged.
+(local-defthm proc-equivalent-p-of-update-proc-for-first-marker-msg-left
   (implies
    (proc-equivalent-p imp-p spec-p)
    (proc-equivalent-p
     (update-proc-for-first-marker-msg imp-p sid j)
     spec-p)))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-set-first-marker-proc-left
+(local-defthm procs-equivalent-p-of-set-first-marker-proc-left
   (implies
    (and
     (procs-equivalent-p ids imp-procs spec-procs)
@@ -940,7 +873,7 @@
    ("Subgoal *1/2"
     :cases ((equal i (car ids))))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-handle-first-marker-msg-left
+(local-defthm procs-equivalent-p-of-handle-first-marker-msg-left
   (implies
    (and
     (procs-equivalent-p ids
@@ -961,12 +894,8 @@
 
 
 ;start reusable non-normal send lemmas
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Reusable non-normal send lemmas
-;; These generic lemmas cover sending any non-normal protocol message on
-;; implementation channels only.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-non-normal-left
+;; Reusable non-normal send lemmas These generic lemmas cover sending any non-normal protocol message on implementation channels only.
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-snoc-non-normal-left
   (implies
    (and
     (imp-spec-channel-msgs-equivalent-p imp-msgs spec-msgs)
@@ -975,7 +904,7 @@
     (snoc imp-msgs msg)
     spec-msgs)))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-send-non-normal-msg-left
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-send-non-normal-msg-left
   (implies
    (and
     (imp-spec-channel-msgs-equivalent-p
@@ -992,7 +921,7 @@
       imp-channels))
     (channel-state src dst spec-channels))))
 
-(channel-equivalence-local-defthm incoming-channels-equivalent-for-proc-p-of-send-non-normal-msg-left
+(local-defthm incoming-channels-equivalent-for-proc-p-of-send-non-normal-msg-left
   (implies
    (and
     (incoming-channels-equivalent-for-proc-p
@@ -1008,7 +937,7 @@
      imp-channels)
     spec-channels)))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-send-non-normal-msg-left
+(local-defthm imp-spec-channels-equivalent-p-aux-of-send-non-normal-msg-left
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -1028,25 +957,20 @@
 
 
 ;start first marker receive: channel/proc helper facts
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; First marker receive: channel/proc helper facts
-;; First marker handling preserves nbrs-from for all processes, removes the
-;; consumed marker, and forwards marker messages on outgoing implementation
-;; channels.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm nbrs-from-of-install-snapshot-entry
+(local-defthm nbrs-from-of-install-snapshot-entry
   (equal
    (nbrs-from
     (install-snapshot-entry sid entry p))
    (nbrs-from p)))
 
-(channel-equivalence-local-defthm nbrs-from-of-update-proc-for-first-marker-msg
+(local-defthm nbrs-from-of-update-proc-for-first-marker-msg
   (equal
    (nbrs-from
     (update-proc-for-first-marker-msg p sid j))
    (nbrs-from p)))
 
-(channel-equivalence-local-defthm nbrs-from-of-procs-handle-first-marker-msg
+(local-defthm nbrs-from-of-procs-handle-first-marker-msg
   (equal
    (nbrs-from
     (g k
@@ -1059,7 +983,7 @@
   (("Goal"
     :cases ((equal k i)))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-handle-first-marker-msg-procs
+(local-defthm imp-spec-channels-equivalent-p-aux-of-handle-first-marker-msg-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -1083,7 +1007,7 @@
     :in-theory
     (disable update-proc-for-first-marker-msg))))
 
-(channel-equivalence-local-defthm channels-of-handle-first-marker-msg
+(local-defthm channels-of-handle-first-marker-msg
   (equal
    (channels
     (handle-first-marker-msg st i j msg))
@@ -1097,12 +1021,8 @@
 
 
 ;start main theorem: marker receive preserves full equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Main theorem: marker receive preserves full equivalence
-;; Both first and non-first marker receives preserve visible process
-;; equivalence and channel projection equivalence.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-equivalent-p-of-step-rcv-marker
+;; Main theorem: marker receive preserves full equivalence Both first and non-first marker receives preserve visible process equivalence and channel projection equivalence.
+(local-defthm imp-spec-equivalent-p-of-step-rcv-marker
   (implies
    (and
     (good-state-p imp-st)
@@ -1142,19 +1062,14 @@
 
 
 ;start first recovery receive: channel equivalence only
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; First recovery receive: channel equivalence only
-;; First recovery may restore implementation local state and set recovery
-;; status, so full process equivalence is not expected here. The proof keeps
-;; only the channel projection relation.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-ids-of-handle-first-recovery-msg
+;; First recovery receive: channel equivalence only First recovery may restore implementation local state and set recovery status, so full process equivalence is not expected here.
+(local-defthm proc-ids-of-handle-first-recovery-msg
   (equal
    (proc-ids
     (handle-first-recovery-msg st i j msg))
    (proc-ids st)))
 
-(channel-equivalence-local-defthm nbrs-from-of-procs-handle-first-recovery-msg
+(local-defthm nbrs-from-of-procs-handle-first-recovery-msg
   (equal
    (nbrs-from
     (g k
@@ -1172,7 +1087,7 @@
      replay-msgs-on-channel
      remove-from-list))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-handle-first-recovery-msg-procs
+(local-defthm imp-spec-channels-equivalent-p-aux-of-handle-first-recovery-msg-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -1199,7 +1114,7 @@
      replay-channel-snapshots
      replay-msgs-on-channel))))
 
-(channel-equivalence-local-defthm channels-of-handle-first-recovery-msg
+(local-defthm channels-of-handle-first-recovery-msg
   (equal
    (channels
     (handle-first-recovery-msg st i j msg))
@@ -1209,7 +1124,7 @@
     (nbrs-to (g i (procs st)))
     (remove-message-from-channel j i (channels st)))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-channels-handle-first-recovery-msg-left
+(local-defthm imp-spec-channels-equivalent-p-aux-of-channels-handle-first-recovery-msg-left
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -1248,7 +1163,7 @@
      remove-message-from-channel
      get-msg-from-channel))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-of-handle-first-recovery-msg
+(local-defthm imp-spec-channels-equivalent-p-of-handle-first-recovery-msg
   (implies
    (and
     (imp-spec-channels-equivalent-p
@@ -1283,7 +1198,7 @@
      get-msg-from-channel
      imp-spec-channels-equivalent-p-aux))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-of-step-rcv-first-recovery
+(local-defthm imp-spec-channels-equivalent-p-of-step-rcv-first-recovery
   (implies
    (and
     (good-state-p imp-st)
@@ -1334,12 +1249,8 @@
 
 
 ;start non-first recovery receive: process equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Non-first recovery receive: process equivalence
-;; Non-first recovery only updates recovery bookkeeping. It does not change
-;; visible process fields, so process equivalence is preserved.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-equivalent-p-of-update-proc-for-non-first-recovery-msg-left
+;; Non-first recovery receive: process equivalence Non-first recovery only updates recovery bookkeeping.
+(local-defthm proc-equivalent-p-of-update-proc-for-non-first-recovery-msg-left
   (implies
    (proc-equivalent-p imp-p spec-p)
    (proc-equivalent-p
@@ -1350,7 +1261,7 @@
     :in-theory
     (disable remove-from-list))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-set-non-first-recovery-proc-left
+(local-defthm procs-equivalent-p-of-set-non-first-recovery-proc-left
   (implies
    (and
     (procs-equivalent-p ids imp-procs spec-procs)
@@ -1373,7 +1284,7 @@
    ("Subgoal *1/2"
     :cases ((equal i (car ids))))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-handle-non-first-recovery-msg-left
+(local-defthm procs-equivalent-p-of-handle-non-first-recovery-msg-left
   (implies
    (and
     (procs-equivalent-p ids
@@ -1396,13 +1307,8 @@
 
 
 ;start non-first recovery receive: channel/proc helper facts
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Non-first recovery receive: channel/proc helper facts
-;; The non-first recovery helper preserves nbrs-from, the handler preserves
-;; proc-ids, and consuming a recovery message preserves channel projection
-;; because recovery is non-normal.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm nbrs-from-of-update-proc-for-non-first-recovery-msg
+(local-defthm nbrs-from-of-update-proc-for-non-first-recovery-msg
   (equal
    (nbrs-from
     (update-proc-for-non-first-recovery-msg p j))
@@ -1412,7 +1318,7 @@
     :in-theory
     (disable remove-from-list))))
 
-(channel-equivalence-local-defthm nbrs-from-of-procs-handle-non-first-recovery-msg
+(local-defthm nbrs-from-of-procs-handle-non-first-recovery-msg
   (equal
    (nbrs-from
     (g k
@@ -1429,7 +1335,7 @@
      update-proc-for-non-first-recovery-msg
      remove-from-list))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-handle-non-first-recovery-msg-procs
+(local-defthm imp-spec-channels-equivalent-p-aux-of-handle-non-first-recovery-msg-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -1457,19 +1363,19 @@
      update-proc-for-non-first-recovery-msg
      remove-from-list))))
 
-(channel-equivalence-local-defthm proc-ids-of-handle-non-first-recovery-msg
+(local-defthm proc-ids-of-handle-non-first-recovery-msg
   (equal
    (proc-ids
     (handle-non-first-recovery-msg st i j msg))
    (proc-ids st)))
 
-(channel-equivalence-local-defthm channels-of-handle-non-first-recovery-msg
+(local-defthm channels-of-handle-non-first-recovery-msg
   (equal
    (channels
     (handle-non-first-recovery-msg st i j msg))
    (remove-message-from-channel j i (channels st))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-channels-handle-non-first-recovery-msg-left
+(local-defthm imp-spec-channels-equivalent-p-aux-of-channels-handle-non-first-recovery-msg-left
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -1511,12 +1417,8 @@
 
 
 ;start main theorem: non-first recovery receive preserves full equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Main theorem: non-first recovery receive preserves full equivalence
-;; Because only bookkeeping changes and one non-normal recovery message is
-;; removed, the full imp/spec equivalence is preserved.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-equivalent-p-of-handle-non-first-recovery-msg
+;; Main theorem: non-first recovery receive preserves full equivalence Because only bookkeeping changes and one non-normal recovery message is removed, the full imp/spec.
+(local-defthm imp-spec-equivalent-p-of-handle-non-first-recovery-msg
   (implies
    (and
     (imp-spec-equivalent-p imp-st spec-st)
@@ -1551,7 +1453,7 @@
      imp-spec-channels-equivalent-p-aux
      procs-equivalent-p))))
 
-(channel-equivalence-local-defthm imp-spec-equivalent-p-of-step-rcv-non-first-recovery
+(local-defthm imp-spec-equivalent-p-of-step-rcv-non-first-recovery
   (implies
    (and
     (good-state-p imp-st)
@@ -1600,19 +1502,14 @@
 
 
 ;start normal receive: process equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Normal receive: process equivalence
-;; A normal receive updates the implementation process using the normal-
-;; message core and updates the spec process using spec-step-rcv. The local-
-;; state updates are aligned by the same received message.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm proc-ids-of-handle-normal-msg-core
+;; Normal receive: process equivalence A normal receive updates the implementation process using the normal- message core and updates the spec process using spec-step-rcv.
+(local-defthm proc-ids-of-handle-normal-msg-core
   (equal
    (proc-ids
     (handle-normal-msg-core st i j msg))
    (proc-ids st)))
 
-(channel-equivalence-local-defthm proc-equivalent-p-of-update-proc-for-normal-msg-core-left-right
+(local-defthm proc-equivalent-p-of-update-proc-for-normal-msg-core-left-right
   (implies
    (proc-equivalent-p imp-p spec-p)
    (proc-equivalent-p
@@ -1628,7 +1525,7 @@
     :in-theory
     (disable record-msg-in-snapshots))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-set-normal-msg-core-left-right
+(local-defthm procs-equivalent-p-of-set-normal-msg-core-left-right
   (implies
    (and
     (procs-equivalent-p ids imp-procs spec-procs)
@@ -1660,7 +1557,7 @@
    ("Subgoal *1/2"
     :cases ((equal i (car ids))))))
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-handle-normal-msg-core-and-spec-step-rcv
+(local-defthm procs-equivalent-p-of-handle-normal-msg-core-and-spec-step-rcv
   (implies
    (and
     (procs-equivalent-p ids
@@ -1689,7 +1586,7 @@
      update-proc-for-normal-msg-core
      procs-equivalent-p))))
 
-(channel-equivalence-local-defthm proc-ids-of-spec-step-rcv
+(local-defthm proc-ids-of-spec-step-rcv
   (equal
    (proc-ids
     (spec-step-rcv st i j))
@@ -1699,12 +1596,8 @@
 
 
 ;start normal receive: getting the matching spec message
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Normal receive: getting the matching spec message
-;; If the implementation head message is normal, then the corresponding spec
-;; channel head is the same message.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-when-incoming-channels-equivalent-for-proc-p
+;; Normal receive: getting the matching spec message If the implementation head message is normal, then the corresponding spec channel head is the same message.
+(local-defthm imp-spec-channel-msgs-equivalent-p-when-incoming-channels-equivalent-for-proc-p
   (implies
    (and
     (incoming-channels-equivalent-for-proc-p
@@ -1714,7 +1607,7 @@
     (channel-state src dst imp-channels)
     (channel-state src dst spec-channels))))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-when-imp-spec-channels-equivalent-p-aux
+(local-defthm imp-spec-channel-msgs-equivalent-p-when-imp-spec-channels-equivalent-p-aux
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -1725,7 +1618,7 @@
     (channel-state src dst imp-channels)
     (channel-state src dst spec-channels))))
 
-(channel-equivalence-local-defthm first-spec-msg-when-left-head-normal-and-msgs-equivalent
+(local-defthm first-spec-msg-when-left-head-normal-and-msgs-equivalent
   (implies
    (and
     (imp-spec-channel-msgs-equivalent-p imp-msgs spec-msgs)
@@ -1734,7 +1627,7 @@
    (equal (first spec-msgs)
           (first imp-msgs))))
 
-(channel-equivalence-local-defthm get-msg-from-channel-equal-when-imp-spec-channels-equivalent-p-aux
+(local-defthm get-msg-from-channel-equal-when-imp-spec-channels-equivalent-p-aux
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -1785,25 +1678,18 @@
        (channel-state src dst spec-channels))))
 
     :in-theory
-    (e/d
-     (get-msg-from-channel)
-     (imp-spec-channel-msgs-equivalent-p
+    (disable imp-spec-channel-msgs-equivalent-p
       imp-spec-channel-msgs-equivalent-p-when-imp-spec-channels-equivalent-p-aux
       first-spec-msg-when-left-head-normal-and-msgs-equivalent
       imp-spec-channels-equivalent-p-aux
-      incoming-channels-equivalent-for-proc-p)))))
+      incoming-channels-equivalent-for-proc-p))))
 
 ;end normal receive: getting the matching spec message
 
 
 ;start normal receive: channel equivalence after consuming normal messages
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Normal receive: channel equivalence after consuming normal messages
-;; For a normal receive, both implementation and spec consume the same
-;; visible channel head. Therefore channel projection equivalence is
-;; preserved after removing the head from both channels.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm nbrs-from-of-procs-handle-normal-msg-core
+;; Normal receive: channel equivalence after consuming normal messages For a normal receive, both implementation and spec consume the same visible channel head.
+(local-defthm nbrs-from-of-procs-handle-normal-msg-core
   (equal
    (nbrs-from
     (g k
@@ -1821,7 +1707,7 @@
      record-msg-in-snapshots
      remove-message-from-channel))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-handle-normal-msg-core-procs
+(local-defthm imp-spec-channels-equivalent-p-aux-of-handle-normal-msg-core-procs
   (equal
    (imp-spec-channels-equivalent-p-aux
     ids
@@ -1850,7 +1736,7 @@
      record-msg-in-snapshots
      remove-message-from-channel))))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-cdr-both-when-left-head-normal
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-cdr-both-when-left-head-normal
   (implies
    (and
     (imp-spec-channel-msgs-equivalent-p imp-msgs spec-msgs)
@@ -1860,7 +1746,7 @@
     (rest imp-msgs)
     (rest spec-msgs))))
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-remove-message-from-channel-both
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-remove-message-from-channel-both
   (implies
    (and
     (imp-spec-channel-msgs-equivalent-p
@@ -1885,7 +1771,7 @@
      src dst
      (remove-message-from-channel rm-src rm-dst spec-channels)))))
 
-(channel-equivalence-local-defthm incoming-channels-equivalent-for-proc-p-of-remove-message-from-channel-both
+(local-defthm incoming-channels-equivalent-for-proc-p-of-remove-message-from-channel-both
   (implies
    (and
     (incoming-channels-equivalent-for-proc-p
@@ -1905,7 +1791,7 @@
     (remove-message-from-channel rm-src rm-dst imp-channels)
     (remove-message-from-channel rm-src rm-dst spec-channels))))
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-remove-message-from-channel-both
+(local-defthm imp-spec-channels-equivalent-p-aux-of-remove-message-from-channel-both
   (implies
    (and
     (imp-spec-channels-equivalent-p-aux
@@ -1936,7 +1822,7 @@
      get-msg-from-channel
      incoming-channels-equivalent-for-proc-p))))
 
-(channel-equivalence-local-defthm channels-of-handle-normal-msg-core
+(local-defthm channels-of-handle-normal-msg-core
   (equal
    (channels
     (handle-normal-msg-core st i j msg))
@@ -1948,7 +1834,7 @@
 ;;     (spec-step-rcv st i j))
 ;;    (remove-message-from-channel j i (channels st))))
 
-(channel-equivalence-local-defthm channels-of-spec-step-rcv-when-msg
+(local-defthm channels-of-spec-step-rcv-when-msg
   (implies
    (get-msg-from-channel j i (channels st))
    (equal
@@ -1956,7 +1842,7 @@
      (spec-step-rcv st i j))
     (remove-message-from-channel j i (channels st)))))
 
-(channel-equivalence-local-defthm channels-of-spec-step-rcv-when-no-msg
+(local-defthm channels-of-spec-step-rcv-when-no-msg
   (implies
    (not (get-msg-from-channel j i (channels st)))
    (equal
@@ -1968,12 +1854,8 @@
 
 
 ;start main theorem: normal receive preserves full equivalence
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Main theorem: normal receive preserves full equivalence
-;; The implementation and spec consume the same normal message and update the
-;; receiver consistently.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(channel-equivalence-local-defthm imp-spec-equivalent-p-of-handle-normal-msg-core
+;; Main theorem: normal receive preserves full equivalence The implementation and spec consume the same normal message and update the receiver consistently.
+(local-defthm imp-spec-equivalent-p-of-handle-normal-msg-core
   (implies
    (and
     (imp-spec-equivalent-p imp-st spec-st)
@@ -2024,20 +1906,7 @@
 
 
 ;start theorem: rep of good implementation state is equivalent
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; REP correctness for a single implementation state
-;;
-;; Goal:
-;;   If IMP-ST is a good implementation state, then REP produces a spec
-;;   state equivalent to IMP-ST.
-;;
-;; Intuition:
-;;   - REP keeps the same proc-ids.
-;;   - REP maps each implementation process to only the visible spec fields:
-;;       :local-state, :nbrs-to, :nbrs-from.
-;;   - REP projects each implementation channel by removing non-normal
-;;     protocol messages, exactly matching imp-spec-channel-msgs-equivalent-p.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2056,15 +1925,9 @@
 ;;    (memberp x ys)))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Process part of REP
-;;
-;; REP maps each implementation process to a spec process containing the
-;; same visible fields. Therefore each mapped process is equivalent to the
-;; original implementation process.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(channel-equivalence-local-defthm proc-equivalent-p-of-map-proc-to-spec-proc
+(local-defthm proc-equivalent-p-of-map-proc-to-spec-proc
   (proc-equivalent-p
    imp-p
    (map-proc-to-spec-proc imp-p)))
@@ -2084,7 +1947,7 @@
     :induct (procs-equivalent-p ids imp-procs spec-procs))))
 
 
-(channel-equivalence-local-defthm procs-equivalent-p-of-map-procs-to-spec-procs
+(local-defthm procs-equivalent-p-of-map-procs-to-spec-procs
   (implies
    (uniquep ids)
    (procs-equivalent-p
@@ -2096,15 +1959,9 @@
     :induct (map-procs-to-spec-procs ids imp-procs))))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Channel-message part of REP
-;;
-;; project-channel-msgs-to-spec keeps exactly the normal messages from the
-;; implementation channel. This is exactly the message-level equivalence
-;; predicate.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(channel-equivalence-local-defthm imp-spec-channel-msgs-equivalent-p-of-project-channel-msgs-to-spec
+(local-defthm imp-spec-channel-msgs-equivalent-p-of-project-channel-msgs-to-spec
   (imp-spec-channel-msgs-equivalent-p
    msgs
    (project-channel-msgs-to-spec msgs))
@@ -2113,18 +1970,9 @@
     :induct (project-channel-msgs-to-spec msgs))))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Channel lookup facts for the channel projection built by REP
-;;
-;; REP builds a 2-D channel record:
-;;   outer key = destination
-;;   inner key = source
-;;
-;; These lemmas say that looking up src -> dst in the projected channel
-;; table returns the normal-message projection of the original imp channel.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(channel-equivalence-local-defthm g-of-project-channel-row-to-spec
+(local-defthm g-of-project-channel-row-to-spec
   (implies
    (and
     (uniquep srcs)
@@ -2138,7 +1986,7 @@
   (("Goal"
     :induct (project-channel-row-to-spec srcs dst imp-channels))))
 
-(channel-equivalence-local-defthm channel-state-of-project-channels-to-spec-aux
+(local-defthm channel-state-of-project-channels-to-spec-aux
   (implies
    (and
     (uniquep dsts)
@@ -2157,7 +2005,7 @@
     :induct (project-channels-to-spec-aux dsts srcs imp-channels))))
 
 
-(channel-equivalence-local-defthm channel-state-of-project-channels-to-spec
+(local-defthm channel-state-of-project-channels-to-spec
   (implies
    (and
     (uniquep ids)
@@ -2172,14 +2020,9 @@
      (channel-state src dst imp-channels)))))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Lift channel projection to incoming channels for one destination.
-;;
-;; We need (subset srcs ids) because REP only projects channels whose source
-;; is in proc-ids. good-state-p will later provide this for nbrs-from.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(channel-equivalence-local-defthm incoming-channels-equivalent-for-proc-p-of-project-channels-to-spec
+(local-defthm incoming-channels-equivalent-for-proc-p-of-project-channels-to-spec
   (implies
    (and
     (uniquep ids)
@@ -2200,13 +2043,7 @@
      (project-channels-to-spec ids imp-channels)))))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helper predicate:
-;; every checked destination process has incoming neighbors contained in IDS.
-;;
-;; This isolates the exact neighbor fact needed by channel equivalence.
-;; good-state-p / good-procs-p should imply this.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun all-nbrs-from-subset-p (dsts procs ids)
   (if (endp dsts)
@@ -2221,7 +2058,7 @@
       ids))))
 
 
-(channel-equivalence-local-defthm all-nbrs-from-subset-p-when-good-procs-p
+(local-defthm all-nbrs-from-subset-p-when-good-procs-p
   (implies
    (good-procs-p dsts procs ids)
    (all-nbrs-from-subset-p dsts procs ids))
@@ -2233,7 +2070,7 @@
 ;; Lift channel projection to all checked destination processes.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(channel-equivalence-local-defthm imp-spec-channels-equivalent-p-aux-of-project-channels-to-spec
+(local-defthm imp-spec-channels-equivalent-p-aux-of-project-channels-to-spec
   (implies
    (and
     (uniquep ids)
@@ -2259,7 +2096,7 @@
 ;; A good implementation state is equivalent to its REP.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(channel-equivalence-local-defthm imp-spec-equivalent-p-of-rep
+(local-defthm imp-spec-equivalent-p-of-rep
   (implies
    (good-state-p imp-st)
    (imp-spec-equivalent-p

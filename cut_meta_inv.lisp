@@ -1,16 +1,31 @@
+; MIT License
+;
+; Copyright (c) 2026 Mohammad Bin Monjil and Sandip Ray
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
+
 (in-package "ACL2")
 (include-book "model")
 (include-book "good_state_inv")
 (include-book "scan")
 (include-book "basic")
-
-
-;; Keep the proof-oriented rewrite machinery private to this book.  Non-local
-;; DEFTHM events within the encapsulate below form the small interface used by
-;; REORDER: initialization, one-step preservation, channel consequences, and
-;; segment preservation.
-(defmacro cut-meta-local-defthm (&rest args)
-  (list 'local (cons 'defthm args)))
 
 
 (defun cut-meta-imp-procs-consistent-p
@@ -30,12 +45,9 @@
 
       (and
 
-       ;; --------------------------------------------------
+       ;; ------------------------------------------------------------
        ;; CUT STATUS
-       ;;
-       ;; Metadata says i has not taken the cut exactly when
-       ;; the implementation does not yet contain TARGET-SID.
-       ;; --------------------------------------------------
+       ;; ------------------------------------------------------------
        (equal
         (cm-cut-not-taken-p m i)
         (not has-sid))
@@ -96,8 +108,6 @@
                  (cm-proc-ids m)))
 
        ;; Target checkpoint has started.
-       ;; The initiator's current counter is now beyond
-       ;; the counter stored in TARGET-SID.
        (< target-counter
           (counter p))))))
 
@@ -162,7 +172,7 @@
 
 (encapsulate ()
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-proc-ids-consistent-p-of-make-cut-meta
 
   (cut-meta-imp-proc-ids-consistent-p
@@ -170,7 +180,7 @@
    st))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-initiator-consistent-p-of-make-cut-meta
 
   (implies
@@ -192,7 +202,7 @@
     st)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-make-cut-meta-gen
 
   (implies
@@ -214,7 +224,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-make-cut-meta
 
   (implies
@@ -283,11 +293,7 @@
       cut-meta-imp-initiator-consistent-p-of-make-cut-meta)
 
      (:instance
-      cut-meta-imp-procs-consistent-p-of-make-cut-meta))
-
-    :in-theory
-    (enable
-     cut-meta-imp-consistent-p))))
+      cut-meta-imp-procs-consistent-p-of-make-cut-meta)))))
 
 
 
@@ -390,27 +396,12 @@
 
 
 ;; ------------------------------------------------------------
-;; GOOD-CUT-META-P is invariant under one metadata-processing
-;; step, provided the implementation state and metadata are
-;; mutually consistent and the concrete input is legal.
-;;
-;; GOOD-STATE-P supplies the structural facts about process
-;; neighbor lists needed when PROCESS-CUT-STEP initializes a new
-;; waiting-marker row.
+;; GOOD-CUT-META-P is invariant under one metadata-processing step, provided the implementation state and metadata are mutually consistent and the concrete input is legal.
 ;; ------------------------------------------------------------
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; FRAME LEMMAS FOR THE TWO GLOBAL INPUT-SEQUENCE FIELDS
-;;
-;; The waiting-marker invariant reads only:
-;;
-;;   :proc-ids
-;;   :cut-not-taken
-;;   :waiting-marker-from
-;;
-;; Consequently, changing either global input sequence cannot
-;; affect the waiting-marker invariant.
-;; ============================================================
+;; ------------------------------------------------------------
 
 
 (defthm
@@ -439,14 +430,12 @@
     m)))
 
 
-;; ============================================================
-;; Updating a stored input sequence does not affect the
-;; correspondence between the cut-control metadata and the
-;; implementation process state.
-;; ============================================================
+;; ------------------------------------------------------------
+;; Updating a stored input sequence does not affect the correspondence between the cut-control metadata and the implementation process state.
+;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-s-before-cut-input-sequence
 
   (equal
@@ -463,7 +452,7 @@
     procs)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-s-after-cut-input-sequence
 
   (equal
@@ -485,7 +474,7 @@
 ;; ============================================================
 
 
-(cut-meta-local-defthm
+(local-defthm
   true-listp-of-append-one
 
   (implies
@@ -502,7 +491,7 @@
 ;; ============================================================
 
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-global-input-sequences-p-of-add-before
 
   (implies
@@ -511,19 +500,10 @@
    (good-cut-meta-global-input-sequences-p
     (cm-add-before-cut-input-sequence
      m
-     input)))
-
-  :hints
-  (("Goal"
-    :in-theory
-    (enable
-     good-cut-meta-global-input-sequences-p
-     cm-add-before-cut-input-sequence
-     cm-before-cut-input-sequence
-     cm-after-cut-input-sequence))))
+     input))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-global-input-sequences-p-of-add-after
 
   (implies
@@ -532,16 +512,7 @@
    (good-cut-meta-global-input-sequences-p
     (cm-add-after-cut-input-sequence
      m
-     input)))
-
-  :hints
-  (("Goal"
-    :in-theory
-    (enable
-     good-cut-meta-global-input-sequences-p
-     cm-add-after-cut-input-sequence
-     cm-before-cut-input-sequence
-     cm-after-cut-input-sequence))))
+     input))))
 
 
 ;; ============================================================
@@ -550,7 +521,7 @@
 ;; ============================================================
 
 
-(cut-meta-local-defthm
+(local-defthm
   cl-good-procs-p-implies-good-proc-p
 
   (implies
@@ -596,7 +567,7 @@
 ;; ============================================================
 
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-waiting-for-procs-p-of-remove-waiting-marker
 
   (implies
@@ -631,16 +602,12 @@
             (car ids))))))
 
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; A first target-marker receive:
-;;
-;;   1. removes I from :cut-not-taken;
-;;   2. installs the still-open incoming channels for I;
-;;   3. preserves the global waiting-marker invariant.
-;; ============================================================
+;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-waiting-for-procs-p-of-first-marker-update
 
   (implies
@@ -691,16 +658,12 @@
 
 
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; Starting the target checkpoint:
-;;
-;;   1. removes the initiator from :cut-not-taken;
-;;   2. installs all of its incoming channels as initially open;
-;;   3. preserves the global waiting-marker invariant.
-;; ============================================================
+;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-waiting-for-procs-p-of-start-checkpoint-update
 
   (implies
@@ -751,15 +714,11 @@
 
 
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; LATER TARGET MARKER
-;;
-;; Process I has already taken its cut. The input is therefore
-;; appended to the global after-cut sequence. The marker then
-;; removes sender J from I's waiting-marker row.
-;; ============================================================
+;; ------------------------------------------------------------
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-waiting-for-procs-p-of-later-marker
 
   (implies
@@ -796,15 +755,11 @@
             (car ids))))))
 
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; TARGET START-CHECKPOINT
-;;
-;; Initially every process is in :cut-not-taken. The target
-;; initiator takes its cut and installs its incoming-neighbor
-;; list as its waiting-marker row.
-;; ============================================================
+;; ------------------------------------------------------------
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-waiting-for-procs-p-of-initial-start-checkpoint
 
   (implies
@@ -859,24 +814,15 @@
 
       (nbrs
        (g :nbrs-from
-          (g i procs))))))
-
-   ("Goal"
-    :in-theory
-    (enable
-     good-procs-p-implies-good-nbrs-from))))
+          (g i procs))))))))
 
 
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; FIRST TARGET MARKER
-;;
-;; Initially every process is in :cut-not-taken. Process I
-;; takes its cut when receiving the first target marker from J.
-;; All other incoming channels remain open.
-;; ============================================================
+;; ------------------------------------------------------------
 
-(cut-meta-local-defthm
+(local-defthm
   good-cut-meta-waiting-for-procs-p-of-initial-first-marker
 
   (implies
@@ -933,12 +879,7 @@
 
       (nbrs
        (g :nbrs-from
-          (g i procs))))))
-
-   ("Goal"
-    :in-theory
-    (enable
-     good-procs-p-implies-good-nbrs-from))))
+          (g i procs))))))))
 
 
 
@@ -977,7 +918,7 @@
 
 
 
-(cut-meta-local-defthm remove-from-list-when-not-memberp-and-true-listp
+(local-defthm remove-from-list-when-not-memberp-and-true-listp
   (implies
    (and
     (true-listp xs)
@@ -1001,7 +942,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   proc-ids-of-cm-add-before-cut-input-sequence
 
   (equal
@@ -1013,7 +954,7 @@
    (proc-ids m)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   sid-of-cm-add-before-cut-input-sequence
 
   (equal
@@ -1024,7 +965,7 @@
 
    (sid m)))
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-cm-add-before-cut-input-sequence
 
   (equal
@@ -1040,7 +981,7 @@
     m
     procs)))
 
-(cut-meta-local-defthm
+(local-defthm
   cm-cut-not-taken-p-of-cm-add-before-cut-input-sequence
 
   (equal
@@ -1053,7 +994,7 @@
     i)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   proc-ids-of-cm-add-after-cut-input-sequence
 
   (equal
@@ -1065,7 +1006,7 @@
    (proc-ids m)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   sid-of-cm-add-after-cut-input-sequence
 
   (equal
@@ -1077,7 +1018,7 @@
    (sid m)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-cm-add-after-cut-input-sequence
 
   (equal
@@ -1094,7 +1035,7 @@
     procs)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cm-cut-not-taken-p-of-cm-add-after-cut-input-sequence
 
   (equal
@@ -1107,7 +1048,7 @@
     i)))
 
 
-(cut-meta-local-defthm proc-ids-of-step-normal
+(local-defthm proc-ids-of-step-normal
   (equal
    (proc-ids
     (step-normal st i))
@@ -1115,7 +1056,7 @@
    (proc-ids st)))
 
 
-(cut-meta-local-defthm counter-of-g-of-procs-of-step-normal
+(local-defthm counter-of-g-of-procs-of-step-normal
   (equal
    (counter
     (g j
@@ -1128,7 +1069,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-step-normal
 
   (equal
@@ -1150,7 +1091,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
     counter-of-target-proc-unchanged-by-start-checkpoint-on-other-proc
     (implies
      (not (equal i j))
@@ -1159,7 +1100,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   target-counter-bound-preserved-by-start-checkpoint-helper
 
   (implies
@@ -1201,7 +1142,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-proc-update-when-target-view-same
 
   (implies
@@ -1233,8 +1174,6 @@
     (len ids))
 
    ;; The LEN induction has only one nontrivial inductive step.
-   ;; Split according to whether the current process is the
-   ;; process being replaced.
    ("Subgoal *1/1"
     :cases
     ((equal i
@@ -1242,7 +1181,7 @@
 
 ;; Updating the counter does not affect the target-cut view.
 
-(cut-meta-local-defthm target-cut-proc-view-of-counter-update
+(local-defthm target-cut-proc-view-of-counter-update
   (equal
    (target-cut-proc-view
     target-sid
@@ -1254,7 +1193,7 @@
 
 ;; Installing an entry for another SID does not affect TARGET-SID.
 
-(cut-meta-local-defthm
+(local-defthm
   target-cut-proc-view-of-install-snapshot-entry-other-sid
 
   (implies
@@ -1276,7 +1215,7 @@
 ;; Starting another checkpoint preserves the updated process's
 ;; view of TARGET-SID.
 
-(cut-meta-local-defthm
+(local-defthm
   target-cut-proc-view-of-g-of-start-checkpoint-helper-other-sid
 
   (implies
@@ -1297,7 +1236,7 @@
      (g i procs)))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-start-checkpoint-helper-other-sid
 
   (implies
@@ -1336,7 +1275,7 @@
           (start-checkpoint-helper procs i))))))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   proc-ids-of-first-marker-meta-update
 
   (equal
@@ -1353,7 +1292,7 @@
    (proc-ids m)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   sid-of-first-marker-meta-update
 
   (equal
@@ -1370,7 +1309,7 @@
    (sid m)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   counter-of-proc-update-for-normal-msg-core
 
   (equal
@@ -1393,7 +1332,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   waiting-marker-from-of-record-msg-in-snapshots
 
   (equal
@@ -1419,7 +1358,7 @@
      msg))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   target-cut-proc-view-of-update-proc-for-normal-msg-core
 
   (equal
@@ -1435,7 +1374,7 @@
     p)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-update-proc-for-normal-msg-core-general
 
   (implies
@@ -1476,7 +1415,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   proc-ids-of-marker-after-cut-meta-update
 
   (equal
@@ -1491,7 +1430,7 @@
    (proc-ids m)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   sid-of-marker-after-cut-meta-update
 
   (equal
@@ -1506,17 +1445,9 @@
    (sid m)))
 
 
-;; If process I has already taken TARGET-SID, then consistency
-;; requires TARGET-SID to be present in I's implementation snapshot list.
-;;
-;; In the failing branch, we also have the opposite assumption:
-;;
-;;   (NOT (MEMBERP (SID M)
-;;                 (SNAPSHOT-IDS (G (PID INPUT) (PROCS ST)))))
-;;
-;; Therefore that branch is impossible.
+;; If process I has already taken TARGET-SID, then consistency requires TARGET-SID to be present in I's implementation snapshot list.
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-cut-taken-implies-snapshot
 
   (implies
@@ -1540,7 +1471,7 @@
 
 ;; Receiving the first marker for NEW-SID does not change the
 ;; cut-relevant view for TARGET-SID when the two SIDs are different.
-(cut-meta-local-defthm
+(local-defthm
   target-cut-proc-view-of-update-proc-for-first-marker-msg-other-sid
 
   (implies
@@ -1564,7 +1495,7 @@
 
 ;; Therefore, installing a first marker for another SID preserves
 ;; process-level consistency for TARGET-SID.
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-update-proc-for-first-marker-msg-other-sid
 
   (implies
@@ -1617,10 +1548,8 @@
 
 
 
-;; Recording INPUT in the before-cut sequence does not affect the
-;; cut-control metadata seen by CUT-META-IMP-PROCS-CONSISTENT-P,
-;; even after I takes the cut and its waiting-marker row is installed.
-(cut-meta-local-defthm
+;; Recording INPUT in the before-cut sequence does not affect the cut-control metadata seen by CUT-META-IMP-PROCS-CONSISTENT-P, even after I takes the cut and its waiting-marker.
+(local-defthm
   cut-meta-imp-procs-consistent-p-vanish-add-before-cut
 
   (equal
@@ -1648,17 +1577,6 @@
 
 
 ;; When process I receives the first marker for TARGET-SID:
-;;
-;;   Metadata:
-;;     - removes I from CUT-NOT-TAKEN
-;;     - sets I's waiting-marker set to NBRS-FROM(I) minus SENDER
-;;
-;;   Implementation:
-;;     - installs TARGET-SID at I
-;;     - installs the same waiting-marker set
-;;
-;; Since UPDATE-PROC-FOR-FIRST-MARKER-MSG now also uses REMOVE1-EQUAL,
-;; there is no longer any REMOVE-FROM-LIST / REMOVE1-EQUAL mismatch.
 
 ;; Removing an element from a proper list cannot introduce
 ;; an element that was not already present.
@@ -1681,7 +1599,7 @@
 ;; Exact metadata-level simplification needed by Subgoal *1/2.2.2''.
 
 
-(cut-meta-local-defthm
+(local-defthm
   not-cm-cut-not-taken-p-preserved-by-other-cut-update
 
   (implies
@@ -1699,7 +1617,7 @@
      j))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cm-cut-not-taken-member-preserved-by-removing-other-proc
 
   (implies
@@ -1719,7 +1637,7 @@
            m))))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   memberp-target-sid-of-install-snapshot-entry
 
   (memberp
@@ -1731,7 +1649,7 @@
      p))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   waiting-marker-from-of-install-snapshot-entry-same-sid
 
   (equal
@@ -1746,11 +1664,9 @@
    (snapshot-waiting-marker-from
     entry)))
 
-;; When process I takes the cut, removing I from the unique
-;; CUT-NOT-TAKEN list guarantees that I is no longer present.
-;; Updating WAITING-MARKER-FROM at the same time is irrelevant.
+;; When process I takes the cut, removing I from the unique CUT-NOT-TAKEN list guarantees that I is no longer present.
 
-(cut-meta-local-defthm
+(local-defthm
   not-memberp-self-of-cut-not-taken-after-taking-cut
 
   (implies
@@ -1771,7 +1687,7 @@
 
 
 ;; MAKE-SNAPSHOT-ENTRY stores WAITING-MARKER-FROM exactly as supplied.
-(cut-meta-local-defthm
+(local-defthm
   waiting-marker-from-of-make-snapshot-entry
 
   (equal
@@ -1788,7 +1704,7 @@
 
 ;; If process I is not among IDS, then changing only I's cut metadata
 ;; and implementation process state cannot affect consistency over IDS.
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-untracked-proc-cut-update
 
   (implies
@@ -1832,7 +1748,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-first-target-marker
 
   (implies
@@ -1919,7 +1835,7 @@
 
 
 
-(cut-meta-local-defthm cut-meta-imp-procs-consistent-p-of-first-target-marker-good-procs
+(local-defthm cut-meta-imp-procs-consistent-p-of-first-target-marker-good-procs
   (implies
    (and
     (cut-meta-imp-procs-consistent-p ids target-sid m procs)
@@ -1970,7 +1886,7 @@
 
 
 ;; From GOOD-STATE-P ST.
-(cut-meta-local-defthm good-state-p-implies-good-procs-p
+(local-defthm good-state-p-implies-good-procs-p
   (implies
    (good-state-p st)
    (good-procs-p
@@ -1979,23 +1895,23 @@
     (proc-ids st))))
 
 
-(cut-meta-local-defthm good-state-p-implies-true-listp-proc-ids
+(local-defthm good-state-p-implies-true-listp-proc-ids
   (implies
    (good-state-p st)
    (true-listp (proc-ids st))))
 
-(cut-meta-local-defthm good-state-p-implies-uniquep-proc-ids
+(local-defthm good-state-p-implies-uniquep-proc-ids
   (implies
    (good-state-p st)
    (uniquep (proc-ids st))))
 
 ;; From GOOD-CUT-META-P M.
-(cut-meta-local-defthm good-cut-meta-p-implies-true-listp-cut-not-taken
+(local-defthm good-cut-meta-p-implies-true-listp-cut-not-taken
   (implies
    (good-cut-meta-p m)
    (true-listp (cm-cut-not-taken m))))
 
-(cut-meta-local-defthm good-cut-meta-p-implies-uniquep-cut-not-taken
+(local-defthm good-cut-meta-p-implies-uniquep-cut-not-taken
   (implies
    (good-cut-meta-p m)
    (uniquep (cm-cut-not-taken m))))
@@ -2003,7 +1919,7 @@
 
 ;; A before-cut record, cut removal, and waiting-marker update cannot
 ;; introduce a process that was absent from CUT-NOT-TAKEN.
-(cut-meta-local-defthm not-cm-cut-not-taken-p-preserved-by-first-marker-meta-update
+(local-defthm not-cm-cut-not-taken-p-preserved-by-first-marker-meta-update
   (implies
    (and
     (true-listp (cm-cut-not-taken m))
@@ -2020,7 +1936,7 @@
 
 ;; If I has not yet taken TARGET-SID, consistency requires that
 ;; TARGET-SID is absent from I's implementation snapshot list.
-(cut-meta-local-defthm cut-meta-imp-procs-consistent-p-cut-not-taken-implies-no-snapshot
+(local-defthm cut-meta-imp-procs-consistent-p-cut-not-taken-implies-no-snapshot
   (implies
    (and
     (cut-meta-imp-procs-consistent-p ids target-sid m procs)
@@ -2033,7 +1949,7 @@
 
 
 ;; AFTER-CUT bookkeeping does not affect cut consistency.
-(cut-meta-local-defthm cut-meta-imp-procs-consistent-p-vanish-add-after-cut
+(local-defthm cut-meta-imp-procs-consistent-p-vanish-add-after-cut
   (equal
    (cut-meta-imp-procs-consistent-p
     ids target-sid
@@ -2048,7 +1964,7 @@
     procs)))
 
 ;; Metadata consistency gives the current waiting set for an already-taken cut.
-(cut-meta-local-defthm cut-meta-imp-procs-consistent-p-cut-taken-implies-waiting-equal
+(local-defthm cut-meta-imp-procs-consistent-p-cut-taken-implies-waiting-equal
   (implies
    (and
     (cut-meta-imp-procs-consistent-p ids target-sid m procs)
@@ -2065,7 +1981,7 @@
      ids target-sid m procs))))
 
 ;; Removing the same sender from equal waiting sets preserves equality.
-(cut-meta-local-defthm remove1-equal-preserves-equal
+(local-defthm remove1-equal-preserves-equal
   (implies
    (equal x y)
    (equal
@@ -2073,7 +1989,7 @@
     (remove1-equal a y))))
 
 ;; Recording an after-cut input does not change any waiting-marker row.
-(cut-meta-local-defthm cm-waiting-marker-for-of-cm-add-after-cut-input-sequence
+(local-defthm cm-waiting-marker-for-of-cm-add-after-cut-input-sequence
   (equal
    (cm-waiting-marker-for
     (cm-add-after-cut-input-sequence m input)
@@ -2082,7 +1998,7 @@
 
 ;; Receiving another TARGET-SID marker after I has already taken the cut
 ;; removes SENDER from the same waiting set in metadata and implementation.
-(cut-meta-local-defthm cut-meta-imp-procs-consistent-p-of-non-first-target-marker
+(local-defthm cut-meta-imp-procs-consistent-p-of-non-first-target-marker
   (implies
    (and
     (cut-meta-imp-procs-consistent-p ids target-sid m procs)
@@ -2134,7 +2050,7 @@
 
 
 ;; A stored SID in GOOD-SNAPSHOTS-P has a good snapshot entry.
-(cut-meta-local-defthm good-snapshots-p-implies-good-snapshot-entry-p
+(local-defthm good-snapshots-p-implies-good-snapshot-entry-p
   (implies
    (and
     (good-snapshots-p snapshot-ids p nbrs ids)
@@ -2144,7 +2060,7 @@
     nbrs)))
 
 ;; GOOD-STATE-P gives a good stored snapshot entry for any process/SID.
-(cut-meta-local-defthm good-state-p-implies-good-snapshot-entry-p
+(local-defthm good-state-p-implies-good-snapshot-entry-p
   (implies
    (and
     (good-state-p st)
@@ -2206,14 +2122,12 @@
     (good-state-p-implies-good-snapshot-entry-p)
 
     :in-theory
-    (e/d
-     (good-snapshot-entry-p)
-
-     (;; Keep the large state invariant opaque.
+    (disable
+      ;; Keep the large state invariant opaque.
       good-state-p
 
       ;; Prevent the explicitly used formula from rewriting itself to T.
-      good-state-p-implies-good-snapshot-entry-p)))))
+      good-state-p-implies-good-snapshot-entry-p))))
 
 
 ;; GOOD-SNAPSHOT-ENTRY-P also directly supplies UNIQUEP.
@@ -2245,29 +2159,21 @@
     (good-state-p-implies-good-snapshot-entry-p)
 
     :in-theory
-    (e/d
-     (good-snapshot-entry-p)
-
-     (;; Keep the large state invariant opaque.
+    (disable
+      ;; Keep the large state invariant opaque.
       good-state-p
 
       ;; Prevent the explicitly used formula from rewriting itself to T.
-      good-state-p-implies-good-snapshot-entry-p)))))
+      good-state-p-implies-good-snapshot-entry-p))))
 
 
 
 
 ;; GOOD-STATE-P supplies:
-;;   - TRUE-LISTP and UNIQUEP of PROC-IDS;
-;;   - TRUE-LISTP and UNIQUEP of the stored waiting-marker row.
-;;
-;; Process/cut consistency plus "cut already taken" supplies that
 
 
 ;; Generalized GOOD-STATE version:
-;; IDS and PROCS may be aliases for the components of ST, and both
-;; synchronized waiting-row updates use REMOVE1-EQUAL.
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-non-first-target-marker-good-state-gen
 
   (implies
@@ -2340,11 +2246,8 @@
     (cut-meta-imp-procs-consistent-p-of-non-first-target-marker)
 
     :in-theory
-    (e/d
-     (;; Normalize the implementation-side REMOVE-FROM-LIST.
-      remove-from-list-equals-remove1-equal-when-true-listp-and-uniquep)
-
-     (;; Do not let the explicitly used theorem rewrite itself away.
+    (disable
+      ;; Do not let the explicitly used theorem rewrite itself away.
       cut-meta-imp-procs-consistent-p-of-non-first-target-marker
 
       ;; Keep large predicates and updates opaque.
@@ -2355,10 +2258,10 @@
       good-snapshot-entry-p
       cm-cut-not-taken-p
       cm-set-waiting-marker-for
-      remove-from-list)))))
+      remove-from-list))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cm-cut-not-taken-p-of-non-first-target-meta-update
 
   (equal
@@ -2375,16 +2278,14 @@
   )
 
 
-;; Changing the status of TARGET-SID does not affect process/cut
-;; consistency, provided the snapshot membership and waiting row
-;; remain unchanged.
+;; Changing the status of TARGET-SID does not affect process/cut consistency, provided the snapshot membership and waiting row remain unchanged.
 
 
 ;; Stop the old nonterminating rewrite rule.
 
 ;; Remove a :STATUS update completely.  The right-hand side is
 ;; structurally smaller and therefore cannot recreate the same redex.
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-removes-target-snapshot-status
 
   (equal
@@ -2427,7 +2328,7 @@
 
 ;; Normalized GOOD-STATE theorem.  The target entry contains only
 ;; the updated waiting row; its status is irrelevant.
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-of-non-first-target-marker-good-state-normalized
 
   (implies
@@ -2494,23 +2395,21 @@
     (cut-meta-imp-procs-consistent-p-of-non-first-target-marker-good-state-gen)
 
     :in-theory
-    (e/d
-     (cut-meta-imp-procs-consistent-p-removes-target-snapshot-status)
-
-     (;; Do not rewrite the explicitly used theorem away.
+    (disable
+      ;; Do not rewrite the explicitly used theorem away.
       cut-meta-imp-procs-consistent-p-of-non-first-target-marker-good-state-gen
 
 
       cut-meta-imp-procs-consistent-p
       good-state-p
-      cm-set-waiting-marker-for)))))
+      cm-set-waiting-marker-for))))
 
 
 
 
 ;; Updating one process's recovery-control fields preserves the
 ;; counter of every queried process, including the updated process.
-(cut-meta-local-defthm
+(local-defthm
   counter-of-g-of-recovery-control-update
 
   (equal
@@ -2571,7 +2470,7 @@
 
 ;; Recording an input in the before-cut sequence preserves the
 ;; complete CUT-NOT-TAKEN list.
-(cut-meta-local-defthm cm-cut-not-taken-of-cm-add-before-cut-input-sequence
+(local-defthm cm-cut-not-taken-of-cm-add-before-cut-input-sequence
   (equal
    (cm-cut-not-taken
     (cm-add-before-cut-input-sequence m input))
@@ -2580,7 +2479,7 @@
 
 ;; Recording an input in the after-cut sequence preserves the
 ;; complete CUT-NOT-TAKEN list.
-(cut-meta-local-defthm cm-cut-not-taken-of-cm-add-after-cut-input-sequence
+(local-defthm cm-cut-not-taken-of-cm-add-after-cut-input-sequence
   (equal
    (cm-cut-not-taken
     (cm-add-after-cut-input-sequence m input))
@@ -2593,7 +2492,7 @@
 
 
 ;; Functional theorem with a clean induction only over IDS.
-(cut-meta-local-defthm
+(local-defthm
   cl-cut-meta-imp-procs-consistent-p-of-target-start-checkpoint
 
   (implies
@@ -2645,7 +2544,7 @@
 
 ;; START-CHECKPOINT-HELPER increments the selected process's counter
 ;; and leaves every other process's counter unchanged.
-(cut-meta-local-defthm counter-of-start-checkpoint-helper
+(local-defthm counter-of-start-checkpoint-helper
   (equal
    (counter
     (g j
@@ -2671,9 +2570,7 @@
 
 
 ;; Specialized SID form needed by Subgoal 28.2.3:
-;; TARGET-SID identifies I at its old counter, so after I starts the
-;; checkpoint, TARGET-SID's counter is strictly smaller than I's counter.
-(cut-meta-local-defthm target-sid-counter-less-after-start-checkpoint-helper
+(local-defthm target-sid-counter-less-after-start-checkpoint-helper
   (implies
    (equal
     (list
@@ -2693,9 +2590,7 @@
 
 
 ;; A start-checkpoint metadata update removes I from CUT-NOT-TAKEN.
-;; The waiting-marker update and before-cut sequence update do not
-;; change that result.
-(cut-meta-local-defthm
+(local-defthm
   cm-cut-not-taken-p-false-after-start-checkpoint-meta-update
 
   (implies
@@ -2719,7 +2614,7 @@
      i))))
 
 
-(cut-meta-local-defthm true-listp-len-2-with-known-first
+(local-defthm true-listp-len-2-with-known-first
   (implies
    (and
     (true-listp sid)
@@ -2738,7 +2633,7 @@
     sid)))
 
 
-(cut-meta-local-defthm good-cut-meta-p-implies-len-sid-equal-2
+(local-defthm good-cut-meta-p-implies-len-sid-equal-2
   (implies
    (good-cut-meta-p m)
 
@@ -2746,7 +2641,7 @@
     (len (cm-sid m))
     2)))
 
-(cut-meta-local-defthm good-cut-meta-p-implies-true-listp-sid
+(local-defthm good-cut-meta-p-implies-true-listp-sid
   (implies
    (good-cut-meta-p m)
 
@@ -2760,7 +2655,7 @@
 ;; process in IDS can already store TARGET-SID.
 ;; ------------------------------------------------------------
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-consistency-all-cut-not-taken-implies-no-snapshot-holder
 
   (implies
@@ -2780,26 +2675,14 @@
   (("Goal"
     :induct
     (cut-meta-imp-procs-consistent-p
-     ids target-sid m procs)
-
-    :in-theory
-    (enable
-     cut-meta-imp-procs-consistent-p
-     some-proc-has-snapshot-id-p
-     cm-cut-not-taken-p
-     subset))))
+     ids target-sid m procs))))
 
 
 ;; ------------------------------------------------------------
-;; A marker at the head of a well-formed channel must have an
-;; SID stored by some process.  Therefore, while every process
-;; is still in CUT-NOT-TAKEN, that marker cannot have SID(M).
-;;
-;; This theorem directly rewrites the SID equality hypothesis
-;; in Subgoal 15.2.2 to NIL.
+;; A marker at the head of a well-formed channel must have an SID stored by some process.
 ;; ------------------------------------------------------------
 
-(cut-meta-local-defthm
+(local-defthm
   marker-head-sid-cannot-equal-unstarted-target-sid
 
   (implies
@@ -2925,9 +2808,7 @@
   (declare
    (xargs :measure (acl2-count outgoing-nbrs)))
 
-  ;; If SRC has not taken its cut yet, it has not sent
-  ;; the target checkpoint marker, so there is no
-  ;; in-transit marker obligation from SRC.
+  ;; If SRC has not taken its cut yet, it has not sent the target checkpoint marker, so there is no in-transit marker obligation from SRC.
   (if (cm-cut-not-taken-p m src)
       t
 
@@ -2938,9 +2819,7 @@
       (let ((out-nbr (first outgoing-nbrs)))
 
         (and
-         ;; If OUT-NBR has not taken its cut yet, then the
-         ;; target checkpoint marker sent by SRC must still
-         ;; be in transit on channel SRC -> OUT-NBR.
+         ;; If OUT-NBR has not taken its cut yet, then the target checkpoint marker sent by SRC must still be in transit on channel SRC -> OUT-NBR.
          (if (cm-cut-not-taken-p m out-nbr)
 
              (marker-for-sid-in-channel-p
@@ -2994,11 +2873,6 @@
 
 (defun cut-markers-in-transit-p (m st)
   ;; Global invariant:
-  ;;
-  ;; For every SRC that has taken the target cut and every
-  ;; outgoing neighbor DST that has not yet taken the cut,
-  ;; the target checkpoint marker is still present somewhere
-  ;; on channel SRC -> DST.
   (cut-markers-in-transit-for-srcs-p
    (proc-ids st)
    (cm-sid m)
@@ -3008,20 +2882,11 @@
 
 ;; ------------------------------------------------------------
 ;; Base case for the invariant.
-;;
-;; If every source process in SRCS is still in :cut-not-taken,
-;; then none of them has sent the target checkpoint marker yet.
-;; Therefore there are no outgoing marker-in-transit obligations
-;; to check, and the invariant holds trivially.
-;;
-;; This lemma is especially useful at checkpoint initialization
-;; and for the processes other than the one that has just taken
-;; the cut.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-when-all-cut-not-taken
 
   (implies
@@ -3038,11 +2903,6 @@
 
 ;; ------------------------------------------------------------
 ;; Initial marker-in-transit invariant.
-;;
-;; MAKE-CUT-META initially places every process in
-;; :cut-not-taken.  Hence no process has yet created an outgoing
-;; target-marker obligation, so CUT-MARKERS-IN-TRANSIT-P holds
-;; immediately for the initial cut metadata.
 ;; ------------------------------------------------------------
 
 
@@ -3060,7 +2920,7 @@
 
 
 
-(cut-meta-local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-of-before-cut-input-sequence-update
+(local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-of-before-cut-input-sequence-update
   (equal
    (cut-marker-in-transit-for-outgoing-nbrs-p
     src
@@ -3077,7 +2937,7 @@
     channels)))
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-of-before-cut-input-sequence-update
+(local-defthm cut-markers-in-transit-for-srcs-p-of-before-cut-input-sequence-update
   (equal
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3094,7 +2954,7 @@
     channels)))
 
 
-(cut-meta-local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-of-after-cut-input-sequence-update
+(local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-of-after-cut-input-sequence-update
   (equal
    (cut-marker-in-transit-for-outgoing-nbrs-p
     src
@@ -3111,7 +2971,7 @@
     channels)))
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-of-after-cut-input-sequence-update
+(local-defthm cut-markers-in-transit-for-srcs-p-of-after-cut-input-sequence-update
   (equal
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3131,42 +2991,20 @@
 ;; (defthm
 ;;   cut-marker-in-transit-for-outgoing-nbrs-p-of-inputs-before-cut-update
 
-;;   (equal
-;;    (cut-marker-in-transit-for-outgoing-nbrs-p
-;;     src
-;;     outgoing-nbrs
-;;     target-sid
-;;     (s :inputs-before-cut val m)
-;;     channels)
+;; (equal
 
-;;    (cut-marker-in-transit-for-outgoing-nbrs-p
-;;     src
-;;     outgoing-nbrs
-;;     target-sid
-;;     m
-;;     channels)))
+;; (cut-marker-in-transit-for-outgoing-nbrs-p
 
 
 ;; (defthm
 ;;   cut-markers-in-transit-for-srcs-p-of-inputs-before-cut-update
 
-;;   (equal
-;;    (cut-markers-in-transit-for-srcs-p
-;;     srcs
-;;     target-sid
-;;     (s :inputs-before-cut val m)
-;;     procs
-;;     channels)
+;; (equal
 
-;;    (cut-markers-in-transit-for-srcs-p
-;;     srcs
-;;     target-sid
-;;     m
-;;     procs
-;;     channels)))
+;; (cut-markers-in-transit-for-srcs-p
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-of-local-state-update
+(local-defthm cut-markers-in-transit-for-srcs-p-of-local-state-update
   (equal
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3187,7 +3025,7 @@
 
 
 
-(cut-meta-local-defthm marker-for-sid-in-channel-p-of-snoc
+(local-defthm marker-for-sid-in-channel-p-of-snoc
   (implies
    (marker-for-sid-in-channel-p
     target-sid
@@ -3199,16 +3037,11 @@
 
 ;; ------------------------------------------------------------
 ;; Ordinary sends cannot destroy an existing target marker.
-;;
-;; SEND-COMPUTE-MESSAGE only appends a normal message to a
-;; channel.  If TARGET-SID was already represented by a marker
-;; somewhere in SRC -> DST, appending another message leaves that
-;; marker in the channel.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm marker-for-sid-in-channel-p-preserved-by-send-compute-message
+(local-defthm marker-for-sid-in-channel-p-preserved-by-send-compute-message
   (implies
    (marker-for-sid-in-channel-p
     target-sid
@@ -3226,7 +3059,7 @@
       channels)))))
 
 
-(cut-meta-local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-send-compute-message
+(local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-send-compute-message
   (implies
    (cut-marker-in-transit-for-outgoing-nbrs-p
     src
@@ -3258,15 +3091,11 @@
 
 ;; ------------------------------------------------------------
 ;; Lift ordinary-send preservation to the global source list.
-;;
-;; Since SEND-COMPUTE-MESSAGE only appends a message and never
-;; removes an existing target marker, every marker-in-transit
-;; obligation that held before the send still holds afterward.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-preserved-by-send-compute-message
+(local-defthm cut-markers-in-transit-for-srcs-p-preserved-by-send-compute-message
   (implies
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3298,15 +3127,10 @@
 
 ;; ------------------------------------------------------------
 ;; START-CHECKPOINT-HELPER is invisible to this invariant.
-;;
-;; The invariant reads PROCS only to obtain each process's
-;; outgoing neighbors.  START-CHECKPOINT-HELPER changes snapshot
-;; and checkpoint-related process state but preserves NBRS-TO.
-;; Hence it does not change any marker-in-transit obligation.
 ;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-of-start-checkpoint-helper
+(local-defthm cut-markers-in-transit-for-srcs-p-of-start-checkpoint-helper
   (equal
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3335,7 +3159,7 @@
     :in-theory
     (disable start-checkpoint-helper))))
 
-(cut-meta-local-defthm marker-for-sid-in-channel-p-preserved-by-send-msg-all-outgoing
+(local-defthm marker-for-sid-in-channel-p-preserved-by-send-msg-all-outgoing
   (implies
    (marker-for-sid-in-channel-p
     target-sid
@@ -3358,7 +3182,7 @@
     (send-msg-all-outgoing-channels
      msg i nbrs channels))))
 
-(cut-meta-local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-send-msg-all-outgoing
+(local-defthm cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-send-msg-all-outgoing
   (implies
    (cut-marker-in-transit-for-outgoing-nbrs-p
     src
@@ -3385,21 +3209,12 @@
      src outgoing-nbrs target-sid m channels))))
 
 ;; ------------------------------------------------------------
-;; Broadcasting a message preserves all already-existing target
-;; marker obligations.
-;;
-;; SEND-MSG-ALL-OUTGOING-CHANNELS only appends messages to
-;; outgoing channels.  Thus an existing target marker cannot be
-;; removed by the broadcast.
-;;
-;; Note that this theorem is preservation only.  The separate
-;; TARGET-MARKER-PRESENT-AFTER-SEND-TO-ALL-OUTGOING-NBRS theorem
-;; is what establishes a newly-created marker obligation.
+;; Broadcasting a message preserves all already-existing target marker obligations.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-preserved-by-send-msg-all-outgoing
+(local-defthm cut-markers-in-transit-for-srcs-p-preserved-by-send-msg-all-outgoing
   (implies
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3426,7 +3241,7 @@
      srcs target-sid m procs channels))))
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-of-proc-status-update
+(local-defthm cut-markers-in-transit-for-srcs-p-of-proc-status-update
   (equal
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3447,16 +3262,11 @@
 
 ;; ------------------------------------------------------------
 ;; Normal-message process updates are invisible to the invariant.
-;;
-;; UPDATE-PROC-FOR-NORMAL-MSG-CORE changes local process state,
-;; but it does not change the process's outgoing-neighbor list.
-;; Since the invariant uses PROCS only through NBRS-TO, the
-;; process update itself cannot affect marker-in-transit facts.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm cut-markers-in-transit-for-srcs-p-of-update-proc-for-normal-msg-core
+(local-defthm cut-markers-in-transit-for-srcs-p-of-update-proc-for-normal-msg-core
   (equal
    (cut-markers-in-transit-for-srcs-p
     srcs
@@ -3493,20 +3303,9 @@
 ;; (defthm
 ;;   cut-marker-in-transit-for-outgoing-nbrs-p-of-inputs-after-cut-update
 
-;;   (equal
-;;    (cut-marker-in-transit-for-outgoing-nbrs-p
-;;     src
-;;     outgoing-nbrs
-;;     target-sid
-;;     (s :inputs-after-cut val m)
-;;     channels)
+;; (equal
 
-;;    (cut-marker-in-transit-for-outgoing-nbrs-p
-;;     src
-;;     outgoing-nbrs
-;;     target-sid
-;;     m
-;;     channels))
+;; (cut-marker-in-transit-for-outgoing-nbrs-p
 
 ;;   :hints
 ;;   (("Goal"
@@ -3526,28 +3325,14 @@
 ;;     (cm-after-cut-append m i j input)
 ;;     procs channels)
 
-;;    (cut-markers-in-transit-for-srcs-p
-;;     srcs target-sid
-;;     m
-;;     procs channels)))
+;; (cut-markers-in-transit-for-srcs-p
 
 ;; (defthm
 ;;   cut-marker-in-transit-for-outgoing-nbrs-p-of-after-cut-msgs-update
 
-;;   (equal
-;;    (cut-marker-in-transit-for-outgoing-nbrs-p
-;;     src
-;;     outgoing-nbrs
-;;     target-sid
-;;     (s :after-cut-msgs val m)
-;;     channels)
+;; (equal
 
-;;    (cut-marker-in-transit-for-outgoing-nbrs-p
-;;     src
-;;     outgoing-nbrs
-;;     target-sid
-;;     m
-;;     channels))
+;; (cut-marker-in-transit-for-outgoing-nbrs-p
 
 ;;   :hints
 ;;   (("Goal"
@@ -3567,10 +3352,7 @@
 ;;     (cm-after-cut-msg-append m i j msg)
 ;;     procs channels)
 
-;;    (cut-markers-in-transit-for-srcs-p
-;;     srcs target-sid
-;;     m
-;;     procs channels)))
+;; (cut-markers-in-transit-for-srcs-p
 
 ;; (defthm sid-of-cm-after-cut-append
 ;;   (equal
@@ -3601,7 +3383,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   marker-for-sid-in-channel-p-preserved-by-remove-normal-message
 
   (implies
@@ -3634,7 +3416,7 @@
              remove-message-from-channel))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-remove-normal-message
 
   (implies
@@ -3674,7 +3456,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-preserved-by-remove-normal-message
 
   (implies
@@ -3712,18 +3494,11 @@
 
 ;; ------------------------------------------------------------
 ;; Metadata/implementation consistency: cut already taken.
-;;
-;; If metadata says process I is no longer in :cut-not-taken,
-;; then the implementation must already contain TARGET-SID in
-;; I's snapshot IDs.
-;;
-;; This lemma removes impossible proof branches where metadata
-;; says "cut taken" but the implementation says otherwise.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-meta-imp-procs-consistent-p-cut-taken-implies-has-snapshot
 
   (implies
@@ -3741,7 +3516,7 @@
     (snapshot-ids (g i procs)))))
 
 
-(cut-meta-local-defthm marker-for-sid-in-channel-p-of-cdr-when-head-not-marker
+(local-defthm marker-for-sid-in-channel-p-of-cdr-when-head-not-marker
   (implies
    (and
     (consp channel)
@@ -3760,15 +3535,10 @@
 
 ;; ------------------------------------------------------------
 ;; Removing a non-marker head preserves a target marker.
-;;
-;; The interesting case is when the removed message is from the
-;; same channel being checked.  Because the removed head is not a
-;; marker, any target marker already present must occur later in
-;; the channel and therefore remains after the head is removed.
 ;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   marker-for-sid-in-channel-p-preserved-by-remove-non-marker-message
 
   (implies
@@ -3794,7 +3564,7 @@
      (remove-message-from-channel
       j i channels)))))
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-remove-non-marker-message
 
   (implies
@@ -3826,7 +3596,7 @@
      src outgoing-nbrs target-sid m channels))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-first-recovery-proc-update
 
   (equal
@@ -3858,7 +3628,7 @@
     (disable update-proc-for-first-recovery-msg))))
 
 
-(cut-meta-local-defthm get-msg-recovery-implies-not-marker
+(local-defthm get-msg-recovery-implies-not-marker
   (implies
    (equal
     (msg-type
@@ -3882,16 +3652,12 @@
 
 ;; ------------------------------------------------------------
 ;; Global lift of non-marker removal preservation.
-;;
-;; This handles RECEIVE cases such as normal and recovery
-;; messages: consuming a non-marker message cannot remove the
-;; checkpoint marker required by the invariant.
 ;; ------------------------------------------------------------
 
 
 
 
-  (cut-meta-local-defthm
+  (local-defthm
   cut-markers-in-transit-for-srcs-p-preserved-by-remove-non-marker-message
 
   (implies
@@ -3936,7 +3702,7 @@
   
 
 
-  (cut-meta-local-defthm
+  (local-defthm
   cut-markers-in-transit-for-srcs-p-of-non-first-recovery-proc-update
 
   (equal
@@ -3973,7 +3739,7 @@
      update-proc-for-non-first-recovery-msg))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-first-marker-proc-update
 
   (equal
@@ -4005,7 +3771,7 @@
     (disable update-proc-for-first-marker-msg))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-of-waiting-marker-from-update
   (equal
    (cut-marker-in-transit-for-outgoing-nbrs-p
@@ -4018,7 +3784,7 @@
     m
     channels)))
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-waiting-marker-from-update
   (equal
    (cut-markers-in-transit-for-srcs-p
@@ -4036,47 +3802,14 @@
 
 ;; ------------------------------------------------------------
 ;; I takes its cut by receiving a marker from J.
-;;
-;; This lemma considers some OTHER process P and checks that
-;; P's existing outgoing-marker obligations are preserved.
-;;
-;; Before the step:
-;;   - I is in :cut-not-taken.
-;;   - P is different from I.
-;;
-;; During the step:
-;;   - I is removed from :cut-not-taken.
-;;   - the received message is removed from channel J -> I.
-;;
-;; The removed message may be the target marker.
-;; This is safe for P because, after I takes the cut, P no
-;; longer has any marker-in-transit obligation whose destination
-;; is I.
-;;
-;; All other outgoing channels of P are unchanged.
-;;
-;; P != I is essential.  I is the newly-cut process, so I gets
-;; NEW outgoing marker obligations.  Those are established later
-;; when I sends the marker to all of its outgoing neighbors.
 ;; ------------------------------------------------------------
 
 ;; ------------------------------------------------------------
 ;; Preserve obligations of an OLD source when I takes the cut.
-;;
-;; I consumes a message from J and is removed from
-;; :cut-not-taken.  For any source process P different from I,
-;; its old outgoing-marker obligations remain valid.
-;;
-;; If the consumed message is the target marker on P -> I, that
-;; removal is safe because after I takes the cut there is no
-;; longer an obligation whose destination is I.
-;;
-;; P != I is essential: I is the newly-cut source and gains new
-;; outgoing obligations, which are established by the broadcast.
 ;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-preserved-when-i-takes-cut
 
   (implies
@@ -4130,35 +3863,14 @@
 
 ;; ------------------------------------------------------------
 ;; Source-level preservation when I takes its cut.
-;;
-;; I takes its cut by receiving a message from J.
-;;
-;; PIDS contains processes other than I.  For every process P
-;; in PIDS, the outgoing-neighbor-level lemma says that P's outgoing
-;; marker obligations are preserved when:
-;;
-;;   - I is removed from :cut-not-taken, and
-;;   - the received message is removed from J -> I.
-;;
-;; We exclude I from PIDS because I is the newly-cut process.
-;; I gets NEW outgoing marker obligations, which will be handled
-;; separately by the marker broadcast from I.
 ;; ------------------------------------------------------------
 
 ;; ------------------------------------------------------------
 ;; Source-list lift for the "I takes the cut" transition.
-;;
-;; PIDS intentionally excludes I.  Every process in PIDS is an
-;; old source whose obligations survive both:
-;;   1. removing I from :cut-not-taken, and
-;;   2. consuming the message on J -> I.
-;;
-;; I itself is handled separately because taking the cut creates
-;; new outgoing obligations for I.
 ;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-preserved-when-i-takes-cut
 
   (implies
@@ -4218,7 +3930,7 @@
 
 
 
-(cut-meta-local-defthm marker-for-sid-in-channel-p-of-snoc-marker
+(local-defthm marker-for-sid-in-channel-p-of-snoc-marker
   (implies
    (equal (msg-type msg) :marker)
 
@@ -4228,18 +3940,12 @@
 
 ;; ------------------------------------------------------------
 ;; Marker broadcast CREATES the required marker.
-;;
-;; Unlike the generic send-preservation lemmas, this theorem does
-;; not assume the target marker already exists.  If MSG is the
-;; target marker and OUT-NBR is one of I's outgoing neighbors,
-;; then after SEND-MSG-ALL-OUTGOING-CHANNELS the target marker is
-;; present on channel I -> OUT-NBR.
 ;; ------------------------------------------------------------
 
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   target-marker-present-after-send-to-all-outgoing-nbrs
 
   (implies
@@ -4274,34 +3980,14 @@
 
 ;; ------------------------------------------------------------
 ;; I has just taken the cut.
-;;
-;; Before this step I was in :cut-not-taken, so there were no
-;; outgoing marker obligations for I.
-;;
-;; After removing I from :cut-not-taken, I becomes a cut process.
-;; Therefore, for every outgoing neighbor that is still in
-;; :cut-not-taken, a target marker must now be present on
-;; channel I -> OUT-NBR.
-;;
-;; SEND-MSG-ALL-OUTGOING-CHANNELS establishes exactly these new
-;; obligations by sending the target marker to every outgoing
-;; neighbor of I.
 ;; ------------------------------------------------------------
 
 ;; ------------------------------------------------------------
 ;; Establish I's NEW outgoing obligations when I takes the cut.
-;;
-;; Before the step I is in :cut-not-taken, so I has no outgoing
-;; marker obligations.  After removing I from :cut-not-taken,
-;; every outgoing neighbor that is still pre-cut requires a
-;; target marker on I -> OUT-NBR.
-;;
-;; The outgoing marker broadcast establishes exactly those new
-;; obligations.
 ;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-when-i-takes-cut
 
   (implies
@@ -4342,7 +4028,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-from-i-and-rest
 
   (implies
@@ -4375,11 +4061,9 @@
     channels)))
 
 
-;; Removing one PID from the list of source processes cannot
-;; create any new marker obligation.  Therefore, if the
-;; invariant holds for all PIDS, it also holds after removing I.
+;; Removing one PID from the list of source processes cannot create any new marker obligation.
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-remove1-equal
 
   (implies
@@ -4395,17 +4079,8 @@
 
 
 ;; If:
-;;
-;;   1. I occurs in PIDS,
-;;   2. I's own outgoing-marker obligation holds, and
-;;   3. the invariant holds for every PID other than I,
-;;
-;; then the invariant holds for the complete PIDS list.
-;;
-;; UNIQUEP is important because REMOVE1-EQUAL I PIDS must
-;; represent exactly "all the other PIDs".
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-from-i-and-other-pids
 
   (implies
@@ -4439,22 +4114,11 @@
 
 ;; ------------------------------------------------------------
 ;; Complete first-target-marker transition.
-;;
-;; This combines the two essential pieces:
-;;
-;;   - all old source processes keep their existing obligations
-;;     when I takes the cut and consumes J -> I; and
-;;
-;;   - I, the newly-cut source, obtains its new outgoing
-;;     obligations because it broadcasts the target marker.
-;;
-;; This is the main semantic lemma for a process taking its cut
-;; upon receiving the first target checkpoint marker.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-after-i-takes-cut-and-sends-marker
 
   (implies
@@ -4509,7 +4173,7 @@
     :cases ((memberp i pids)))))
 
 
-(cut-meta-local-defthm cm-cut-not-taken-of-cut-not-taken-update
+(local-defthm cm-cut-not-taken-of-cut-not-taken-update
   (equal
    (cm-cut-not-taken
     (s :cut-not-taken val m))
@@ -4517,7 +4181,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-of-cut-update-over-waiting-and-after-cut
 
   (equal
@@ -4559,7 +4223,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-cut-update-over-waiting-and-after-cut
 
   (equal
@@ -4599,7 +4263,7 @@
      procs
      channels))))
 
-(cut-meta-local-defthm cm-cut-not-taken-of-waiting-marker-from-update
+(local-defthm cm-cut-not-taken-of-waiting-marker-from-update
   (equal
    (cm-cut-not-taken
     (s :waiting-marker-from val m))
@@ -4609,27 +4273,14 @@
 
 ;; ------------------------------------------------------------
 ;; I has already taken the cut.
-;;
-;; Therefore no process has an in-transit marker obligation
-;; whose destination is I.
-;;
-;; Hence removing any message from J -> I is safe for the
-;; marker-in-transit invariant.  In this branch the removed
-;; message is the target marker, but that does not matter:
-;; destination I is already cut.
 ;; ------------------------------------------------------------
 
 ;; ------------------------------------------------------------
 ;; Later target-marker receive.
-;;
-;; If I has already taken the cut, no source has an outstanding
-;; marker-in-transit obligation whose destination is I.
-;; Therefore consuming any message on J -> I, including the
-;; target marker itself, cannot violate this invariant.
 ;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-remove-message-when-i-already-cut
 
   (implies
@@ -4664,15 +4315,11 @@
 
 ;; ------------------------------------------------------------
 ;; Global lift for a later marker received by an already-cut I.
-;;
-;; Since destination I is already closed with respect to the cut,
-;; removing the message from J -> I preserves every source's
-;; remaining marker-in-transit obligations.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-preserved-by-remove-message-when-i-already-cut
 
   (implies
@@ -4705,7 +4352,7 @@
     :in-theory
     (disable remove-message-from-channel))))
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-snapshots-update
 
   (equal
@@ -4734,17 +4381,12 @@
 
 ;; ------------------------------------------------------------
 ;; Removing a marker for a DIFFERENT checkpoint is safe.
-;;
-;; A RECEIVE may consume a marker whose SID is not TARGET-SID.
-;; Such a message is irrelevant to the target cut.  Any marker
-;; for TARGET-SID already present in the channel remains after
-;; this non-target marker is removed.
 ;; ------------------------------------------------------------
 
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   marker-for-sid-in-channel-p-preserved-by-remove-non-target-marker
 
   (implies
@@ -4785,7 +4427,7 @@
     (disable remove-message-from-channel))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   different-sid-marker-implies-not-target-marker
 
   (implies
@@ -4809,7 +4451,7 @@
       (sid msg)
       target-sid)))))
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-preserved-by-remove-non-target-marker
 
   (implies
@@ -4848,15 +4490,11 @@
 
 ;; ------------------------------------------------------------
 ;; Global preservation when a different-SID marker is consumed.
-;;
-;; The target cut metadata does not change in this case, and the
-;; removed marker belongs to another checkpoint.  Therefore all
-;; target-marker obligations survive the receive.
 ;; ------------------------------------------------------------
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-preserved-by-remove-non-target-marker
 
   (implies
@@ -4897,16 +4535,10 @@
 
 
 ;; ------------------------------------------------------------
-;; START-RECOVERY-HELPER changes recovery-related process fields,
-;; but it does not change any process's outgoing-neighbor list.
-;;
-;; The marker-in-transit invariant only uses PROCS to obtain
-;; (nbrs-to (g src procs)).
-;;
-;; Therefore START-RECOVERY-HELPER is invisible to this invariant.
+;; START-RECOVERY-HELPER changes recovery-related process fields, but it does not change any process's outgoing-neighbor list.
 ;; ------------------------------------------------------------
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-start-recovery-helper
 
   (equal
@@ -4944,36 +4576,14 @@
 
 ;; ------------------------------------------------------------
 ;; I initiates the target checkpoint.
-;;
-;; Before the step every PID is in :cut-not-taken, so no
-;; process has outgoing marker obligations.
-;;
-;; I is then removed from :cut-not-taken.  This creates new
-;; outgoing marker obligations only for I.
-;;
-;; SEND-MSG-ALL-OUTGOING-CHANNELS sends the target marker to
-;; every outgoing neighbor of I, establishing those new
-;; obligations.  Every other PID remains in :cut-not-taken,
-;; so it still has no outgoing obligations.
 ;; ------------------------------------------------------------
 
 ;; ------------------------------------------------------------
 ;; Initiator starts the target checkpoint.
-;;
-;; Before the start step, PIDS is exactly :cut-not-taken, so no
-;; process has an outgoing marker obligation.
-;;
-;; I is removed from :cut-not-taken, making I the only newly-cut
-;; source.  The marker broadcast from I establishes I's required
-;; markers to every still-pre-cut outgoing neighbor.  Every other
-;; PID remains pre-cut and therefore has no source obligation.
-;;
-;; This is the main semantic lemma for the :START-CHECKPOINT
-;; branch.
 ;; ------------------------------------------------------------
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-after-i-starts-checkpoint
 
   (implies
@@ -5023,7 +4633,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-of-cut-update-over-waiting-and-before-cut
 
   (equal
@@ -5064,7 +4674,7 @@
      channels))))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-of-cut-update-over-waiting-and-before-cut
 
   (equal
@@ -5109,39 +4719,11 @@
   (equal
    (cm-cut-not-taken
     (s :after-cut-input-sequence val m))
-   (cm-cut-not-taken m))
-  :hints
-  (("Goal"
-    :in-theory
-    (enable cm-cut-not-taken))))
+   (cm-cut-not-taken m)))
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; MAIN ONE-STEP PRESERVATION THEOREM
-;;
-;; If:
-;;   - the marker-in-transit invariant holds before the step,
-;;   - cut metadata is consistent with the implementation,
-;;   - the implementation state and cut metadata are well formed,
-;;   - and INPUT is legal,
-;;
-;; then processing the same INPUT in both:
-;;
-;;     PROCESS-CUT-STEP   -- metadata evolution
-;;     SYSTEM-STEP        -- implementation evolution
-;;
-;; preserves CUT-MARKERS-IN-TRANSIT-P.
-;;
-;; The supporting lemmas above cover the semantic cases:
-;;   * ordinary sends and receives,
-;;   * recovery traffic,
-;;   * non-target checkpoint markers,
-;;   * later target-marker receives,
-;;   * first target-marker receives where a process takes its cut,
-;;   * and the initiator's START-CHECKPOINT step.
-;;
-;; This theorem is the step-level invariant needed to lift the
-;; property to an entire input segment by induction.
-;; ============================================================
+;; ------------------------------------------------------------
 
 
 
@@ -5200,21 +4782,6 @@
 
 ;; ------------------------------------------------------------
 ;; Marker-in-transit preservation over an entire input segment.
-;;
-;; PROCESS-CUT-SEGMENT processes each input through the cut
-;; metadata scanner, while RUN-IMP executes the same input
-;; sequence in the implementation.
-;;
-;; The one-step theorem preserves CUT-MARKERS-IN-TRANSIT-P.
-;; To apply it repeatedly, the induction also relies on the
-;; segment/step preservation of:
-;;
-;;   - CUT-META-IMP-CONSISTENT-P
-;;   - GOOD-CUT-META-P
-;;   - GOOD-STATE-P
-;;
-;; LEGAL-INPUT-SEQUENCEP guarantees that each input is legal
-;; at the implementation state where that input is executed.
 ;; ------------------------------------------------------------
 
 
@@ -5222,7 +4789,7 @@
 
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-marker-in-transit-for-outgoing-nbrs-p-implies-marker
 
   (implies
@@ -5254,7 +4821,7 @@
   :match-free :all)))
 
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-for-srcs-p-implies-marker
 
   (implies
@@ -5291,16 +4858,9 @@
 
 ;; ------------------------------------------------------------
 ;; Global marker consequence of CUT-MARKERS-IN-TRANSIT-P.
-;;
-;; If SRC has taken the cut, DST is still pre-cut, and DST is
-;; an outgoing neighbor of SRC, then the target marker is
-;; present somewhere on SRC -> DST.
-;;
-;; This is just the global wrapper around
-;; CUT-MARKERS-IN-TRANSIT-FOR-SRCS-P-IMPLIES-MARKER.
 ;; ------------------------------------------------------------
 
-(cut-meta-local-defthm
+(local-defthm
   cut-markers-in-transit-p-implies-marker
 
   (implies
@@ -5339,7 +4899,7 @@
   :match-free :all)))
 
 
-(cut-meta-local-defthm marker-for-sid-in-channel-p-implies-consp
+(local-defthm marker-for-sid-in-channel-p-implies-consp
   (implies
    (marker-for-sid-in-channel-p
     target-sid
@@ -5351,9 +4911,7 @@
   :match-free :all)))
 
 ;; ------------------------------------------------------------
-;; If SRC is post-cut and DST is still pre-cut, the target
-;; marker must be somewhere on SRC -> DST.  Therefore that
-;; channel was already nonempty.
+;; If SRC is post-cut and DST is still pre-cut, the target marker must be somewhere on SRC -> DST.
 ;; ------------------------------------------------------------
 (defthm
   cut-markers-in-transit-for-srcs-p-implies-channel-consp
@@ -5397,20 +4955,6 @@
 
 ;; ------------------------------------------------------------
 ;; Global version of the FOR-SRCS channel-nonempty theorem.
-;;
-;; CUT-MARKERS-IN-TRANSIT-P expands to
-;;
-;;   CUT-MARKERS-IN-TRANSIT-FOR-SRCS-P
-;;      (PROC-IDS ST)
-;;      (CM-SID M)
-;;      M
-;;      (PROCS ST)
-;;      (CHANNELS ST)
-;;
-;; Therefore, if SRC is one of the processes, DST is an
-;; outgoing neighbor of SRC, SRC is post-cut, and DST is
-;; still pre-cut, then SRC -> DST must already contain the
-;; target marker and hence must be nonempty.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -5463,16 +5007,7 @@
 
 
 ;; ------------------------------------------------------------
-;; GOOD-CUT-META and CUT-META/IMPLEMENTATION CONSISTENCY
-;; are preserved together over an entire legal input segment.
-;;
-;; The induction carries both invariants simultaneously because
-;; each one-step preservation theorem may rely on the other at
-;; the current state.
-;;
-;; GOOD-STATE-P is also preserved along the implementation run
-;; and supplies the implementation well-formedness needed at
-;; every recursive step.
+;; GOOD-CUT-META and CUT-META/IMPLEMENTATION CONSISTENCY are preserved together over an entire legal input segment.
 ;; ------------------------------------------------------------
 
 
@@ -5530,11 +5065,6 @@
 
 ;; ------------------------------------------------------------
 ;; Metadata/implementation consistency over a complete segment.
-;;
-;; PROCESS-CUT-SEGMENT collects metadata over INPUTS while
-;; RUN-IMP executes the same concrete inputs.  If they agree at
-;; the beginning and the required invariants hold, they agree
-;; again at the end of the segment.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -5585,21 +5115,6 @@
 
 ;; ------------------------------------------------------------
 ;; Marker-in-transit preservation over an entire input segment.
-;;
-;; PROCESS-CUT-SEGMENT processes each input through the cut
-;; metadata scanner, while RUN-IMP executes the same input
-;; sequence in the implementation.
-;;
-;; The one-step theorem preserves CUT-MARKERS-IN-TRANSIT-P.
-;; To apply it repeatedly, the induction also relies on the
-;; segment/step preservation of:
-;;
-;;   - CUT-META-IMP-CONSISTENT-P
-;;   - GOOD-CUT-META-P
-;;   - GOOD-STATE-P
-;;
-;; LEGAL-INPUT-SEQUENCEP guarantees that each input is legal
-;; at the implementation state where that input is executed.
 ;; ------------------------------------------------------------
 
 (defthm cut-markers-in-transit-p-preserved-by-segment

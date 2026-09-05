@@ -1,4 +1,31 @@
+; MIT License
+;
+; Copyright (c) 2026 Mohammad Bin Monjil and Sandip Ray
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
 (in-package "ACL2")
+
+;; Use LOCAL-DEFTHM for proof-support theorems that should remain local
+;; to the book in which they are introduced.
+(defmacro local-defthm (&rest args)
+  (list 'local (cons 'defthm args)))
 
 ;;   distributed-checkpointingh.lisp
 ;;   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -6,25 +33,11 @@
 ;; Author: Sandip Ray
 ;; Date: Tue May  6 09:10:58 2025
 
-;; In this book, we formalize a version of the Chandy-Lamport distributed snapshot
-;; protocol using ACL2.  The goal is to have a formalization of correctness in a
-;; generic form applicable to *any* reasonable snapshot algorithm.  In order to be
-;; able to show that the protocol is correct using this correctness criterion we
-;; need to augment the protocol in certain ways which might be thought of as
-;; "completion" of the protocol.
+;; In this book, we formalize a version of the Chandy-Lamport distributed snapshot protocol using ACL2.
 
 ;; Effort Breakdown:
 
-;; - I spent two hour on May 8, creating an abstract
-;;   structure for the distribued protocol.  The key reason
-;;   for the time it took was an initial simplification I
-;;   was trying to make, which was to associate incoming
-;;   channel with each process.  However, that seemed wrong
-;;   eventually, since a process as to have incoming
-;;   channels corresponding to multiple processes, which
-;;   ultimately made me change the channel into a 2-D array
-;;   indexed by process indices i and j (indicating a
-;;   channel from i to j).
+;; - I spent two hour on May 8, creating an abstract structure for the distribued protocol.
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -86,19 +99,11 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
-;; I use the records book, principally so that I don't have to deal with
-;; hypothesis on "well-formedness" of the state structure.  I hate to write
-;; such hypothesis and carry along with the invariants that such structure is
-;; preserved.  In this section I also build the macros I'm going to use for
-;; access and updates to the different state components.
+;; I use the records book, principally so that I don't have to deal with hypothesis on "well-formedness" of the state structure.
 
 (include-book "misc/records" :dir :system)
 
-;; The system state is given by (1) the state of all the processes, (2) the
-;; state of the stable storage corresponding to all the processes, and (3) the
-;; state of the communication channels.  For this level of formalization I don't
-;; care that much whether the channel is a message passing interface or shared
-;; memory.  I'll just call everything the channel.
+;; The system state is given by (1) the state of all the processes, (2) the state of the stable storage corresponding to all the processes, and (3) the state of the communication.
 
 ;; I may add more components to the state.  If I do, I will
 ;; add them here.
@@ -107,14 +112,7 @@
 (defmacro channels  (s) `(g :channels ,s))
 (defmacro proc-ids  (s) `(g :proc-ids ,s)) ;list of process-ids
 
-;; A process will have a local state, some outgoing
-;; channels, and some incoming channels.  I feel that when
-;; we start modeling the protocol we will need to put more
-;; stuff, like a place for its stable snapshot.  But for
-;; now, this is sufficient.  The way I am modeling channels
-;; is as a 2D array (or record).  chans[i][j] (which I model
-;; as (g i (g j chans)) gives me th channel from index i to
-;; index j.
+;; A process will have a local state, some outgoing channels, and some incoming channels.
 
 (defmacro local-state           (p) `(g :local-state ,p))
 (defmacro channel-state (i j chans) `(g ,i (g ,j ,chans)))
@@ -166,37 +164,9 @@
 (defmacro waiting-recovery-from (p) `(g :waiting-recovery-from ,p))
 (defmacro counter               (p) `(g :counter ,p))
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Snapshot bookkeeping: accessors, entry structure, and update helpers
-;;
-;; This block defines the basic interface for managing per-process
-;; snapshot state.  Each process keeps:
-;;   (1) a list of snapshot ids currently known to it, and
-;;   (2) a table mapping each snapshot id to its corresponding
-;;       snapshot entry.
-;;
-;; A snapshot entry stores all information associated with one
-;; checkpoint instance:
-;;   - :status               = current progress of the snapshot
-;;                             (e.g., :checkpointing or :done)
-;;   - :local-snap-shot      = saved local state of the process
-;;   - :channel-snapshots    = recorded in-transit messages for
-;;                             incoming channels
-;;   - :waiting-marker-from  = incoming neighbors from which a
-;;                             marker is still expected
-;;
-;; The macros below provide convenient access to snapshot-related
-;; fields in process records, message records, and snapshot entries.
-;; The functions then build and maintain this snapshot structure:
-;;   - make-snapshot-entry      creates a fresh entry for a new snapshot
-;;   - add-snapshot-id          adds a snapshot id if not already present
-;;   - set-snapshot-entry       stores an entry under a given snapshot id
-;;   - install-snapshot-entry   updates both the id list and snapshot table
-;;   - update-snapshot-entry    edits an existing snapshot entry in place
-;;
-;; In short, this block organizes how snapshot metadata is represented,
-;; created, looked up, and updated during checkpointing and recovery.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 ;; Get the list of snapshot ids currently tracked by a process.
 (defmacro snapshot-ids          (p) `(g :snapshot-ids ,p))
@@ -238,11 +208,6 @@
 
 
 ;; Create a fresh snapshot entry.
-;; local-snap-shot      = saved local state
-;; waiting-marker-from  = incoming channels still waiting for marker arrival
-;; j                    = channel that delivered the first marker;
-;;                        if j is nil, initialize with no channel entry yet
-;;                        which is applicable for the process who started checkpointing
 (defun make-snapshot-entry (local-snap-shot waiting-marker-from j)
   (let ((cs (if j
                 (s j nil nil)   ;; explicit empty snapshot for channel j
@@ -283,15 +248,7 @@
 ;; Section 3: Stubbed Functions and other constraints
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; I am defining the neighbors of the process of index i in
-;; procs.  I will likely need to have some conditions, like
-;; the neighbors graph is connected.  And I will add that to
-;; the constraints in the function.  The idea of the
-;; neighbors is to think about which processes I can send
-;; the message to. If some process is in the nbrs list for
-;; me then I will send a message to it, and append it to its
-;; incoming channel.  By modeling this way I avoid having
-;; the deal with outgoing and incoming channels separately. 
+;; I am defining the neighbors of the process of index i in procs.
 
 ;; (encapsulate
 ;;  (((make-nbrs-to * *) => *)
@@ -301,43 +258,7 @@
 ;;   (local (defun make-nbrs-from (i proc-ids) (declare (ignore i proc-ids)) nil)))
 
 
-;; The following protocol-dependent operations could have been introduced
-;; with defstub, but we use encapsulate instead so that their argument
-;; structure is explicit and easy to inspect.
-;;
-;; These functions represent the abstract application behavior that is
-;; layered underneath the checkpointing/recovery protocol.  During normal
-;; execution, a process evolves in two conceptually different ways:
-;;
-;;   1. Local computation without receiving a message.
-;;   2. State update caused by receiving a message from a neighbor.
-;;
-;; For that reason we keep two separate local-state update functions:
-;;
-;;   - update-local-state-normal:
-;;       models an internal/local transition of the process during an
-;;       ordinary step when no message is being received. But a process
-;;       may send a send a msg.
-;;
-;;   - update-local-state-rcv:
-;;       models the state transition caused by consuming a message from
-;;       neighbor nbr.
-;;
-;; In addition, a process may choose to send messages to only some of its
-;; outgoing neighbors during a normal step.  The predicate
-;; message-to-send? determines whether a message should be sent on a given
-;; outgoing channel, and create-compute-message constructs that ordinary
-;; application-level message.
-;;
-;; The checkpointing protocol itself also introduces two special control
-;; messages:
-;;
-;;   - create-marker-message:
-;;       constructs the marker used to propagate snapshot initiation.
-;;
-;;   - create-recovery-message:
-;;       constructs the recovery message used to coordinate rollback.
-;;
+;; The following protocol-dependent operations could have been introduced with defstub, but we use encapsulate instead so that their argument structure is explicit and easy to.
 
 (encapsulate
  (((update-local-state-rcv * * *) => *)
@@ -396,49 +317,9 @@
   (equal (sid (create-recovery-message local-state sid))
          sid))
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Channel update and marker-handling logic
-;;
-;; This block contains the core operations used to propagate and process
-;; snapshot marker messages.
-;;
-;; First, we define basic channel manipulation utilities:
-;;   - remove-message-from-channel removes the head message from an
-;;     incoming channel after that message has been consumed.
-;;   - send-msg-all-outgoing-channels appends the same message to all
-;;     outgoing channels in a given neighbor list.
-;;
-;; Next, we define the handling of marker messages for the checkpoint
-;; protocol.  A marker message for snapshot id sid can arrive at a
-;; process either as the first marker seen for that snapshot, or as a
-;; later marker on another incoming channel.
-;;
-;;   - handle-first-marker-msg:
-;;       This is the case where process i sees sid for the first time.
-;;       The process records its current local state as the snapshot,
-;;       initializes the set of incoming channels still waiting for a
-;;       marker, removes j from that set because j has already delivered
-;;       the first marker, installs the new snapshot entry, forwards the
-;;       marker on all outgoing channels, and removes the received marker
-;;       from channel j -> i.
-;;
-;;   - handle-non-first-marker-msg:
-;;       This handles later marker arrivals for an already known snapshot.
-;;       The process simply marks channel j as having delivered its marker,
-;;       updates the waiting-marker-from set, and changes the snapshot
-;;       status to :done once markers have been received on all incoming
-;;       channels.  It also removes the marker message from channel j -> i.
-;;
-;;   - handle-marker-msg:
-;;       This dispatcher checks whether sid is already present in the
-;;       process's snapshot-id list.  If not, the marker is treated as
-;;       the first one for that snapshot; otherwise it is treated as a
-;;       subsequent marker.
-;;
-;; So the organization is:
-;;   channel utilities -> first-marker handling -> later-marker handling
-;;   -> dispatch based on whether the snapshot id is already known.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 ;; Remove the first msg from a incoming channel and return channels
 (defun remove-message-from-channel (nbr i channels)
@@ -537,52 +418,9 @@
       (handle-first-marker-msg st i j msg))))
 
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Recovery replay and recovery-message handling
-;;
-;; This block defines how a process restores its state during recovery
-;; and how recovery messages are propagated through the system.
-;;
-;; The first two functions implement replay of the recorded snapshot
-;; history.  When a process rolls back to a saved local snapshot, it
-;; must also re-apply the in-transit messages that were recorded for
-;; that snapshot.
-;;
-;;   - replay-msgs-on-channel:
-;;       replays the saved messages of one incoming channel, in their
-;;       original order, by repeatedly applying update-local-state-rcv.
-;;
-;;   - replay-channel-snapshots:
-;;       extends this replay across all incoming neighbors by fetching
-;;       each channel's recorded message list from the snapshot entry
-;;       and replaying them one channel at a time.
-;;
-;; The next functions handle recovery control messages.
-;;
-;;   - handle-first-recovery-msg:
-;;       this is the first recovery message seen by process i.  The
-;;       process restores its saved local snapshot for sid, replays the
-;;       recorded incoming-channel messages, forwards the recovery
-;;       message to all outgoing neighbors, removes the received message
-;;       from channel j -> i, and enters :recovering mode.  It then
-;;       waits for recovery messages from all other incoming neighbors.
-;;
-;;   - handle-non-first-recovery-msg:
-;;       this handles later recovery messages while the process is
-;;       already recovering.  In this case, no further rollback or
-;;       replay is needed.  The process simply records that neighbor j
-;;       has responded, removes the received message, and returns to
-;;       :normal once all expected recovery messages have arrived.
-;;
-;;   - handle-recovery-msg:
-;;       dispatches between the two cases above.  If the process is in
-;;       :normal state, this must be the first recovery message;
-;;       otherwise it is treated as a later one.
-;;
-;; So the organization is:
-;;   replay saved snapshot traffic -> handle first recovery message ->
-;;   handle later recovery messages -> dispatch by recovery status.
-;; ---------------------------------------------------------------
+;; ------------------------------------------------------------
 
 
 
@@ -708,45 +546,9 @@
         (handle-first-recovery-msg st i j msg)
 	(handle-non-first-recovery-msg st i j msg))))
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Normal-message processing and snapshot recording
-;;
-;; This block defines how ordinary application messages are handled,
-;; especially when checkpointing is in progress.
-;;
-;; The key issue is that, while a snapshot is still open, some incoming
-;; messages may need to be recorded as part of the channel snapshot.
-;; In particular, if a snapshot is currently :checkpointing and process i
-;; is still waiting for the marker from channel j, then a normal message
-;; arriving on j is considered in-transit for that snapshot and must be
-;; appended to the saved message list for channel j.
-;;
-;;   - record-msg-in-snapshots:
-;;       scans all snapshot ids currently tracked by the process and,
-;;       for each active snapshot that is still waiting for marker j,
-;;       records msg in that snapshot's per-channel message history.
-;;
-;; Once this recording rule is defined, ordinary message handling splits
-;; into two cases.
-;;
-;;   - handle-normal-msg-core:
-;;       this is the standard case.  The process consumes the message,
-;;       updates its local state, records the message in any still-open
-;;       snapshots where it counts as in-transit, removes the message
-;;       from the incoming channel, and writes the updated process state
-;;       back into the system state.
-;;
-;;   - ignore-normal-msg:
-;;       this is used during recovery when process i is still waiting for
-;;       a recovery message from sender j.  In that case, ordinary
-;;       application messages from j are ignored and simply removed from
-;;       the channel.
-;;
-;;   - handle-normal-msg:
-;;       dispatches between the two behaviors above.  If the receiver is
-;;       recovering and still waiting for j, the message is ignored;
-;;       otherwise it is handled normally.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 (defun record-msg-in-snapshots (snapshots snapshot-ids j msg)
   (cond ((endp snapshot-ids)
@@ -811,27 +613,9 @@
 	(handle-normal-msg-core st i j msg))))
 
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Receiving one message from an incoming channel
-;;
-;; This block provides the entry point for a receive step.
-;;
-;;   - get-msg-from-channel:
-;;       reads the head message from the incoming channel nbr -> i
-;;       without yet modifying the channel state.
-;;
-;;   - step-rcv:
-;;       performs one receive transition for process i from sender j.
-;;       It first fetches the message at the head of channel j -> i,
-;;       examines its type, and then dispatches to the corresponding
-;;       handler:
-;;         :normal    -> ordinary application-message handling
-;;         :marker    -> checkpoint marker handling
-;;         :recovery  -> recovery-message handling
-;;
-;; Thus, this section separates message inspection from message-specific
-;; processing, and serves as the main dispatcher for all receive events.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 (defun get-msg-from-channel (nbr i channels)
   (let ((channel (channel-state nbr i channels)))
@@ -873,21 +657,9 @@
 ;;       (:recovery (handle-recovery-msg st i j msg))
 ;;       (otherwise st))))
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Normal computation step and application-level message sending
-;;
-;; This block models ordinary process behavior outside the special
-;; checkpointing and recovery control flow.
-;;
-;; A normal step has two parts:
-;;   (1) the process may send ordinary application messages to some of
-;;       its outgoing neighbors, and
-;;   (2) it updates its own local state by taking an internal step.
-;;
-;; The messages sent here are "compute messages," meaning ordinary
-;; application messages, as opposed to the marker and recovery messages
-;; introduced by the checkpointing protocol itself.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 
 (defun send-compute-message (local-state i nbrs channels)
@@ -926,17 +698,9 @@
          	:channels channels)))
        st))
  
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Start a new checkpoint at process i.
-;;
-;; A fresh snapshot id is created from the process id and its local
-;; counter.  The current local state is saved as the local snapshot,
-;; and the new snapshot entry is initialized to wait for marker
-;; messages from all incoming neighbors.  The snapshot entry is then
-;; installed in the process state, the counter is incremented for
-;; future checkpoints, and a marker message for this snapshot is sent
-;; on all outgoing channels.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 (defun start-checkpoint-helper (procs i)
   (let* ((p     (g i procs))
@@ -982,16 +746,9 @@
     (>st :procs procs
          :channels (channels st))))
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Recover process i from its most recent completed snapshot.
-;;
-;; The process selects its latest saved snapshot id, restores the saved
-;; local state from that snapshot, and replays the recorded in-transit
-;; messages from all incoming channels.  It then creates a recovery
-;; message for that snapshot and sends it on all outgoing channels.
-;; Finally, the process enters :recovering mode and records that it is
-;; waiting for recovery messages from all incoming neighbors.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 (defun recovery-local-state-after-replay (p)
   (let* ((nbrs-from     (nbrs-from p))
@@ -1052,19 +809,9 @@
       (t st))))
 
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Specification-level step functions.
-;;
-;; These functions define the simpler specification semantics used for
-;; comparison with the full checkpointing system. 
-;;
-;; - spec-step-rcv processes one received message by updating the local
-;;   state of process i and removing the message from channel j -> i.
-;;
-;; - spec-step-normal performs one normal process step by sending any
-;;   compute messages on outgoing channels and then updating the local
-;;   state of process i.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 (defun spec-step-rcv (st i j)
   (let* ((channels (channels st))
@@ -1155,33 +902,9 @@
 
 
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Predicates for global checkpointing/recovery status and input legality.
-;;
-;; This block defines a small hierarchy of predicates that inspect the
-;; distributed system state at different levels.
-;;
-;; First, it checks whether a single process has any snapshot whose
-;; status is still :checkpointing. It then lifts that check to the
-;; whole system by scanning all process ids and asking whether any
-;; process still has an unfinished snapshot. In parallel, it also
-;; defines predicates that scan the process table to determine whether
-;; any process is currently in :recovering status.
-;;
-;; These system-level predicates are then used to define legal-inputp,
-;; which enforces simple protocol restrictions on the allowed next input.
-;;
-;; In particular:
-;;   - a :crash input is illegal while the system is checkpointing
-;;     or recovering,
-;;   - a :start-checkpoint input is illegal while any process is
-;;     recovering, and
-;;   - a :recover input is illegal while any snapshot is still
-;;     checkpointing.
-;;
-;; These restrictions rule out overlapping protocol phases that would
-;; interfere with the intended checkpoint/recovery behavior.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 (defun any-checkpointing-snapshot-in-ids-p (snapshot-ids p)
   (cond ((endp snapshot-ids)
@@ -1260,14 +983,6 @@
       (memberp i ids))
 
      ;; A receive is legal only if:
-     ;;   - receiver i is a valid process;
-     ;;   - sender j is a valid process;
-     ;;   - j is an incoming neighbor of i;
-     ;;   - channel j -> i contains a message to consume.
-     ;;
-     ;; We do not require the message to be :normal here because the
-     ;; implementation also receives :marker and :recovery messages
-     ;; through the generic :receive input.
      ((equal tp :receive)
       (and
        (memberp i ids)
@@ -1306,8 +1021,6 @@
         (any-snapshot-checkpointing-p st))))
 
      ;; A recovery is illegal during checkpointing or recovery.
-     ;; The recovery SID must be known by every process because recovery
-     ;; messages may be forwarded.
      ((equal tp :recover)
       (and
        (memberp i ids)
@@ -1361,13 +1074,7 @@
    (uniquep (make-proc-ids))))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Abstract neighbor constructors
-;;
-;; These construct the initial incoming/outgoing neighbor lists from a
-;; process id and the full global process-id list.
-;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (encapsulate
  (((make-nbrs-to * *) => *)
   ((make-nbrs-from * *) => *))
@@ -1398,8 +1105,6 @@
            proc-ids))
 
  ;; Direction 1:
- ;; If j is in i's incoming-neighbor list,
- ;; then i is in j's outgoing-neighbor list.
  (defthm make-nbrs-from-implies-make-nbrs-to
    (implies
     (and
@@ -1409,8 +1114,6 @@
     (memberp i (make-nbrs-to j proc-ids))))
 
  ;; Direction 2:
- ;; If i is in j's outgoing-neighbor list,
- ;; then j is in i's incoming-neighbor list.
  (defthm make-nbrs-to-implies-make-nbrs-from
    (implies
     (and
@@ -1440,14 +1143,7 @@
     (declare (ignore i))
     nil)))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Concrete construction of the initial process table
-;;
-;; Each process record stores:
-;;   :local-state
-;;   :nbrs-to
-;;   :nbrs-from
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun make-one-proc (i all-ids)
   (>_ :local-state (make-init-local-state i)
@@ -1466,14 +1162,7 @@
   (make-procs-aux ids ids))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Concrete construction of the initial channel table
-;;
-;; Channel table is a 2-D record:
-;;   channel-state src dst channels
-;;
-;; Initially, every channel is empty (nil).
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun make-channel-row (srcs)
   (if (endp srcs)
@@ -1540,12 +1229,7 @@
         :channels channels)))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Initial spec state
-;;
-;; Spec processes need only local-state / nbrs fields, so make-procs is
-;; already sufficient here.  No initial snapshot installation is needed.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun make-initial-spec-state ()
   (let* ((ids      (make-proc-ids))
@@ -1561,18 +1245,7 @@
 
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Channel projection for REP
-;;
-;; Implementation channels may contain:
-;;   :normal
-;;   :marker
-;;   :recovery
-;;
-;; The spec should only see normal/application messages.
-;; Therefore REP must project each implementation channel by removing
-;; marker/recovery protocol messages and keeping only normal messages.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
 
@@ -1590,10 +1263,6 @@
 
 (defun project-channel-row-to-spec (srcs dst imp-channels)
   ;; Build one destination row of the spec channel table.
-  ;;
-  ;; For fixed DST, project every SRC -> DST channel.
-  ;; Since channel-state src dst channels = (g src (g dst channels)),
-  ;; the row stored under DST maps SRC keys to message lists.
   (if (endp srcs)
       nil
     (let* ((src       (first srcs))
@@ -1608,9 +1277,6 @@
 
 (defun project-channels-to-spec-aux (dsts srcs imp-channels)
   ;; Build the full spec channel table.
-  ;;
-  ;; Outer keys are destination process ids.
-  ;; Inner keys are source process ids.
   (if (endp dsts)
       nil
     (let* ((dst       (first dsts))
@@ -1649,14 +1315,7 @@
       (s i spec-p spec-procs))))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Updated REP
-;;
-;; REP now:
-;;   - preserves proc-ids,
-;;   - projects each implementation process to spec process fields,
-;;   - projects channels by removing marker/recovery messages.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun rep (imp-st)
   (let* ((ids          (proc-ids imp-st))
@@ -1684,23 +1343,9 @@
 
 
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; CHECKPOINT-CONTROL VIEW
-;;
-;; REP2 deliberately hides checkpoint protocol state.
-;;
-;; For future checkpoint-body execution, however, two pieces of
-;; implementation process state still matter:
-;;
-;;   - :COUNTER
-;;       determines the SID created by a future :START-CHECKPOINT;
-;;
-;;   - :SNAPSHOT-IDS
-;;       determines whether a received marker is a first marker
-;;       or a later marker.
-;;
-;; This function extracts exactly those fields for every process.
-;; ============================================================
+;; ------------------------------------------------------------
 
 (defun cl-checkpoint-control-view
     (ids procs)
@@ -1731,12 +1376,9 @@
 
 
 
-;; ============================================================
+;; ------------------------------------------------------------
 ;; REP3
-;;
-;; REP3 strengthens REP2 with the checkpoint-control information
-;; needed for future checkpoint execution.
-;; ============================================================
+;; ------------------------------------------------------------
 
 (defun rep3 (st)
 
@@ -1791,29 +1433,48 @@
         procs-2)))))
 
 
+;; Imp/spec equivalence definitions The spec state keeps only application-visible process information.
+(defun proc-equivalent-p (imp-p spec-p)
+  ;; Spec process keeps only the application-visible process fields.
+  (and
+   (equal (local-state imp-p)
+          (local-state spec-p))
+   (equal (nbrs-to imp-p)
+          (nbrs-to spec-p))
+   (equal (nbrs-from imp-p)
+          (nbrs-from spec-p))))
 
+(defun procs-equivalent-p (ids imp-procs spec-procs)
+  ;; Check process equivalence for every process id.
+  (if (endp ids)
+      t
+    (and
+     (proc-equivalent-p
+      (g (first ids) imp-procs)
+      (g (first ids) spec-procs))
+     (procs-equivalent-p
+      (rest ids)
+      imp-procs
+      spec-procs))))
 
-;; (defun
-;;   cl-state-equivalent-p
-;;   (st-1 st-2)
+;; State equivalence used by the implementation reordering proof
 
-;;   (and
-;;    (equal
-;;     (proc-ids st-1)
-;;     (proc-ids st-2))
+(defun state-equivalent-p (st-1 st-2)
+  (and
+   (equal
+    (proc-ids st-1)
+    (proc-ids st-2))
+   (equal
+    (channels st-1)
+    (channels st-2))
+   ;; Existing pointwise visible-process relation.
+   (procs-equivalent-p
+    (proc-ids st-1)
+    (procs st-1)
+    (procs st-2))
+   ;; Existing pointwise checkpoint-control relation.
+   (cl-checkpoint-control-equivalent-p
+    (proc-ids st-1)
+   (procs st-1)
+   (procs st-2))))
 
-;;    (equal
-;;     (channels st-1)
-;;     (channels st-2))
-
-;;    ;; Existing pointwise visible-process relation.
-;;    (procs-equivalent-p
-;;     (proc-ids st-1)
-;;     (procs st-1)
-;;     (procs st-2))
-
-;;    ;; Existing pointwise checkpoint-control relation.
-;;    (cl-checkpoint-control-equivalent-p
-;;     (proc-ids st-1)
-;;     (procs st-1)
-;;     (procs st-2))))

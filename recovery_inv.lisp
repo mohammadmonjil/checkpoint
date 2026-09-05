@@ -1,3 +1,25 @@
+; MIT License
+;
+; Copyright (c) 2026 Mohammad Bin Monjil and Sandip Ray
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
 (in-package "ACL2")
 (include-book "model")
 (include-book "basic")
@@ -36,12 +58,6 @@
 
 ;; ------------------------------------------------------------
 ;; Read :PROC-STATUS after updating FIELD of process I.
-;;
-;; If K is not I, process K is unchanged.
-;;
-;; If K is I:
-;;   - when FIELD = :PROC-STATUS, the new status is VALUE;
-;;   - otherwise, :PROC-STATUS is unchanged.
 ;; ------------------------------------------------------------
 
 (defthm proc-status-of-g-after-proc-field-update
@@ -71,15 +87,6 @@
 
 ;; ------------------------------------------------------------
 ;; Updating one field of one process cannot introduce a
-;; recovering process provided that:
-;;
-;;   - nobody was recovering before the update, and
-;;
-;;   - if the updated field is :PROC-STATUS, its new value
-;;     is not :RECOVERING.
-;;
-;; If FIELD is anything other than :PROC-STATUS, the process
-;; status is unchanged.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -114,9 +121,6 @@
 
 ;; ------------------------------------------------------------
 ;; Reading :PROC-STATUS after replacing process I.
-;;
-;; If K = I, we read the status from the replacement P.
-;; Otherwise, process K is unchanged.
 ;; ------------------------------------------------------------
 
 (defthm proc-status-of-g-of-set-proc
@@ -136,10 +140,8 @@
     ((equal k i)))))
 
 
-;;-----------------------------------------------------------
-;; Replacing process I does not affect whether any process
-;; is recovering, provided the replacement has the same
-;; :PROC-STATUS as the old process.
+;; ------------------------------------------------------------
+;; Replacing process I does not affect whether any process is recovering, provided the replacement has the same :PROC-STATUS as the old process.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -161,12 +163,7 @@
      procs))))
 
 ;; ------------------------------------------------------------
-;; A step classified as NO-RECOVERY-STEP-P cannot introduce
-;; a recovering process.
-;;
-;; If no process is recovering before the step, and the step
-;; does not perform any recovery action, then no process is
-;; recovering afterward.
+;; A step classified as NO-RECOVERY-STEP-P cannot introduce a recovering process.
 ;; ------------------------------------------------------------
 
 (defthm no-recovery-step-p-preserves-no-proc-recovering
@@ -256,12 +253,6 @@
 
 ;; ------------------------------------------------------------
 ;; The implementation is completely outside recovery:
-;;
-;;   1. no process is currently recovering;
-;;   2. no recovery message remains anywhere in the channels.
-;;
-;; This is the invariant we actually need during a checkpoint
-;; segment.
 ;; ------------------------------------------------------------
 
 (defun recovery-free-state-p (st)
@@ -299,11 +290,7 @@
 
 
 ;; ------------------------------------------------------------
-;; Appending a non-recovery message to a recovery-free channel
-;; preserves the fact that the channel contains no recovery
-;; messages.
-;;
-;; This is the basic fact needed for NORMAL computation sends.
+;; Appending a non-recovery message to a recovery-free channel preserves the fact that the channel contains no recovery messages.
 ;; ------------------------------------------------------------
 
 (defthm no-recovery-msgs-in-channel-p-of-snoc
@@ -327,11 +314,7 @@
 
 
 ;; ------------------------------------------------------------
-;; A compute message can safely be appended to a recovery-free
-;; channel.
-;;
-;; CREATE-COMPUTE-MESSAGE always creates a :NORMAL message,
-;; hence never a :RECOVERY message.
+;; A compute message can safely be appended to a recovery-free channel.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -351,22 +334,7 @@
 
 
 ;; ------------------------------------------------------------
-;; Replacing one channel SRC -> DST by NEW-CHANNEL preserves
-;; recovery-freedom for the destination scan, provided the
-;; replacement channel itself contains no recovery messages.
-;;
-;; The channel table update has the same shape used throughout
-;; the model:
-;;
-;;   (s dst
-;;      (s src new-channel
-;;         (g dst channels))
-;;      channels)
-;;
-;; If SCAN-SRC = SRC and the current destination is DST, the
-;; predicate sees NEW-CHANNEL.
-;;
-;; Every other channel is unchanged.
+;; Replacing one channel SRC -> DST by NEW-CHANNEL preserves recovery-freedom for the destination scan, provided the replacement channel itself contains no recovery messages.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -402,20 +370,7 @@
 
 
 ;; ------------------------------------------------------------
-;; Updating one channel by appending a COMPUTE message
-;; preserves NO-RECOVERY-MSGS-FOR-DSTS-P.
-;;
-;; There are two relevant cases:
-;;
-;;   SCAN-SRC != I
-;;      The updated channel belongs to another source row,
-;;      so this row is unchanged.
-;;
-;;   SCAN-SRC = I
-;;      If DST is one of the destinations being checked, the
-;;      old I -> DST channel is recovery-free by the original
-;;      row predicate.  Appending a COMPUTE message preserves
-;;      that property because a COMPUTE message is :NORMAL.
+;; Updating one channel by appending a COMPUTE message preserves NO-RECOVERY-MSGS-FOR-DSTS-P.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -451,26 +406,7 @@
     (enable
      no-recovery-msgs-for-dsts-p))))
 ;; ------------------------------------------------------------
-;; SEND-COMPUTE-MESSAGE preserves the absence of recovery
-;; messages for one fixed source row.
-;;
-;; SEND-COMPUTE-MESSAGE walks through NBRS.  Whenever it sends
-;; a message, it updates exactly one channel:
-;;
-;;      I -> (FIRST NBRS)
-;;
-;; by appending CREATE-COMPUTE-MESSAGE.
-;;
-;; We already proved:
-;;
-;;   1. appending a compute message preserves
-;;      NO-RECOVERY-MSGS-IN-CHANNEL-P;
-;;
-;;   2. replacing one channel by a recovery-free channel
-;;      preserves NO-RECOVERY-MSGS-FOR-DSTS-P.
-;;
-;; Therefore each recursive SEND-COMPUTE-MESSAGE update
-;; preserves the whole row property.
+;; SEND-COMPUTE-MESSAGE preserves the absence of recovery messages for one fixed source row.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -501,15 +437,6 @@
      channels))))
 ;; ------------------------------------------------------------
 ;; SEND-COMPUTE-MESSAGE preserves recovery-free channels.
-;;
-;; The function may append compute messages to some outgoing
-;; channels of process I.
-;;
-;; Every compute message is a :NORMAL message, so each append
-;; preserves NO-RECOVERY-MSGS-IN-CHANNEL-P.
-;;
-;; Therefore, if there are no recovery messages anywhere
-;; before SEND-COMPUTE-MESSAGE, there are still none afterward.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -544,16 +471,7 @@
 
 
 ;; ------------------------------------------------------------
-;; Appending any non-recovery message to one channel preserves
-;; NO-RECOVERY-MSGS-FOR-DSTS-P.
-;;
-;; This is generic enough for both:
-;;
-;;   - compute messages (:NORMAL)
-;;   - checkpoint messages (:MARKER)
-;;
-;; and avoids proving separate row-update lemmas for each
-;; message constructor.
+;; Appending any non-recovery message to one channel preserves NO-RECOVERY-MSGS-FOR-DSTS-P.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -608,18 +526,7 @@
 
 
 ;; ------------------------------------------------------------
-;; SEND-MSG-ALL-OUTGOING-CHANNELS preserves recovery-freedom
-;; for one fixed source row, provided the message being sent
-;; is not a recovery message.
-;;
-;; At each recursive step, the function only appends MSG to
-;; one channel:
-;;
-;;      SRC -> (FIRST DSTS-TO-SEND)
-;;
-;; The previously proved single-channel lemma handles that
-;; update; the induction hypothesis handles the remaining
-;; outgoing neighbors.
+;; SEND-MSG-ALL-OUTGOING-CHANNELS preserves recovery-freedom for one fixed source row, provided the message being sent is not a recovery message.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -657,12 +564,7 @@
 
 
 ;; ------------------------------------------------------------
-;; Sending a non-recovery message to all outgoing neighbors
-;; preserves the absence of recovery messages in the entire
-;; channel table.
-;;
-;; The row-level preservation theorem handles each SRC in the
-;; outer scan.
+;; Sending a non-recovery message to all outgoing neighbors preserves the absence of recovery messages in the entire channel table.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -699,9 +601,7 @@
 
 
 ;; ------------------------------------------------------------
-;; If a nonempty channel contains no recovery messages, then
-;; the message currently returned from that channel is not a
-;; recovery message.
+;; If a nonempty channel contains no recovery messages, then the message currently returned from that channel is not a recovery message.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -720,9 +620,7 @@
 
 
 ;; ------------------------------------------------------------
-;; If all channels from SRC to destinations in DSTS contain
-;; no recovery messages, then the current message on SRC -> DST
-;; is not a recovery message for any DST in DSTS.
+;; If all channels from SRC to destinations in DSTS contain no recovery messages, then the current message on SRC -> DST is not a recovery message for any DST in DSTS.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -832,14 +730,7 @@
 
 
 ;; ------------------------------------------------------------
-;; Removing the head message from SENDER -> RECEIVER preserves
-;; recovery-freedom for one fixed source row.
-;;
-;; If SCAN-SRC is not SENDER, the row is unchanged.
-;;
-;; If SCAN-SRC = SENDER, then when the destination scan reaches
-;; RECEIVER, the original channel is recovery-free, and CDR of
-;; a recovery-free channel is also recovery-free.
+;; Removing the head message from SENDER -> RECEIVER preserves recovery-freedom for one fixed source row.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -888,22 +779,7 @@
   :hints (("Goal"
 	   :in-theory (disable remove-message-from-channel))))
 ;; ------------------------------------------------------------
-;; A checkpoint-body step cannot start recovery from a
-;; recovery-free state.
-;;
-;; Allowed body inputs are:
-;;
-;;   :NOP
-;;   :NORMAL
-;;   :RECEIVE
-;;   :START-CHECKPOINT
-;;
-;; None of these creates a recovery message from nothing.
-;; Since there is no recovery message in any channel initially,
-;; a :RECEIVE cannot consume a recovery message either.
-;;
-;; Hence no process becomes :RECOVERING and no recovery message
-;; appears.
+;; A checkpoint-body step cannot start recovery from a recovery-free state.
 ;; ------------------------------------------------------------
 
 (defthm recovery-free-state-p-preserved-by-checkpoint-body-step
@@ -950,24 +826,7 @@
 
 
 ;; ------------------------------------------------------------
-;; In a recovery-free state, every legal checkpoint-body input
-;; is automatically a NO-RECOVERY step.
-;;
-;; RECOVERY-FREE-STATE-P gives:
-;;
-;;   1. no process is currently recovering;
-;;   2. no channel contains a recovery message.
-;;
-;; CL-CHECKPOINT-BODY-INPUT-P restricts INPUT to:
-;;
-;;   :NOP
-;;   :NORMAL
-;;   :RECEIVE
-;;   :START-CHECKPOINT
-;;
-;; For RECEIVE, LEGAL-INPUTP gives valid sender/receiver IDs
-;; and a nonempty channel.  Recovery-freedom then implies that
-;; GET-MSG-FROM-CHANNEL cannot return a :RECOVERY message.
+;; In a recovery-free state, every legal checkpoint-body input is automatically a NO-RECOVERY step.
 ;; ------------------------------------------------------------
 
 (defthm

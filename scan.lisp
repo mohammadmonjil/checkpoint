@@ -1,9 +1,27 @@
+; MIT License
+;
+; Copyright (c) 2026 Mohammad Bin Monjil and Sandip Ray
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
 
 (in-package "ACL2")
 (include-book "model")
-;; (include-book "good_state_inv")	
-;; (include-book "channel_equivalence")
-
 
 (defun current-msg-for-receive (input st)
   (let* ((i        (pid input))
@@ -16,20 +34,7 @@
 
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Unified cut scan
-;;
-;; This is a drop-in replacement for the existing cut-metadata/scan block.
-;; Existing names are preserved.  The only new global metadata field is:
-;;
-;;   :after-cut-input-sequence
-;;
-;; It contains every ordinary input whose process had already taken its cut,
-;; in the original global execution order.
-;;
-;; The older :inputs-after-cut field is preserved unchanged.  It remains the
-;; channel-wise table of receives recorded while an incoming channel is open.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; ------------------------------------------------------------------
 ;; Existing metadata accessors
@@ -118,13 +123,7 @@
 
 
 (defun make-cut-meta (sid initiator st)
-  ;; Initial cut metadata before processing the target
-  ;; :start-checkpoint input.
-  ;;
-  ;; No process has taken its cut yet.  In particular, the initiator
-  ;; remains in :cut-not-taken.  PROCESS-CUT-STEP will recognize the
-  ;; matching :start-checkpoint input, remove the initiator from
-  ;; :cut-not-taken, and initialize its waiting-marker-from entry.
+  ;; Initial cut metadata before processing the target :start-checkpoint input.
   (declare (ignore initiator))
   (let* (
          (proc-ids (proc-ids st))
@@ -223,32 +222,6 @@
 
 
 
-;; (defun process-cut-checkpoint (input st m)
-;;   (let* ((i          (pid input))
-;;          (procs      (procs st))
-;;          (p          (g i procs))
-;;          (input-sid  (list i
-;;                            (counter p)))
-;;          (target-sid (cm-sid m)))
-
-;;     (if (equal input-sid target-sid)
-
-;;         ;; This is the :start-checkpoint that begins TARGET-SID.
-;;         ;; The initiator now takes its cut.
-;;         (let* ((m (cm-remove-cut-not-taken m i))
-;;                (m (s :waiting-marker-from
-;;                      (s i
-;;                         (nbrs-from p)
-;;                         (g :waiting-marker-from m))
-;;                      m)))
-;;           m)
-
-;;       ;; A :start-checkpoint for some other checkpoint.
-;;       ;; It does not affect this cut scan.
-;; 	m)))
-
-
-
 (defun process-cut-checkpoint (input st m)
   (let* ((i          (pid input))
          (p          (g i (procs st)))
@@ -324,22 +297,9 @@
 (defmacro cut-result-meta (r)
   `(g :cut-meta ,r))
 
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 ;; Existing scan names, now scanning through full checkpoint completion
-;; ---------------------------------------------------------------
-;; ------------------------------------------------------------------
-;; Cut-phase scan
-;;
-;; Starting from checkpoint-start, scan the aligned input suffix and
-;; trace until checkpointing for the current sid is complete.
-;;
-;; Return:
-;;   - :cut-done-index   = first index at which checkpointing is done
-;;   - :cut-meta         = final cut metadata
-;;
-;; For sid = :init, cut-done is immediate, since there is no actual
-;; checkpoint protocol to complete.
-;; ------------------------------------------------------------------
+;; ------------------------------------------------------------
 
 
 (defun scan-until-cut-done-aux (inputs trace idx m)
@@ -367,21 +327,7 @@
 
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; SCAN UNTIL CHECKPOINT COLLECTION IS COMPLETE
-;;
-;; Unlike the previous scanner:
-;;
-;;   - no execution trace is required;
-;;   - no numeric index is maintained;
-;;   - the current implementation state is carried recursively;
-;;   - only the final cut metadata is returned.
-;;
-;; The scan stops when either:
-;;
-;;   1. no inputs remain; or
-;;   2. checkpoint collection is complete.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; Scan until checkpoint collection completes, returning only metadata.
 (defun scan-until-checkpoint-done (inputs st m)

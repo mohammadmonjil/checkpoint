@@ -1,3 +1,26 @@
+; MIT License
+;
+; Copyright (c) 2026 Mohammad Bin Monjil and Sandip Ray
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
+
 (in-package "ACL2")
 (include-book "model")
 
@@ -222,11 +245,6 @@
 
 ;; ------------------------------------------------------------
 ;; Reading :NBRS-FROM after replacing one process.
-;;
-;; If K is the replaced process, read :NBRS-FROM from NEW-P.
-;; Otherwise, process K is unchanged.
-;;
-;; This is purely a record G/S fact.
 ;; ------------------------------------------------------------
 
 (defthm nbrs-from-of-g-of-set-proc
@@ -298,12 +316,6 @@
 
 ;; ------------------------------------------------------------
 ;; Read :PROC-STATUS after updating FIELD of process I.
-;;
-;; If K is not I, process K is unchanged.
-;;
-;; If K is I:
-;;   - when FIELD = :PROC-STATUS, the new status is VALUE;
-;;   - otherwise, :PROC-STATUS is unchanged.
 ;; ------------------------------------------------------------
 
 (defthm proc-status-of-g-after-proc-field-update
@@ -333,15 +345,6 @@
 
 ;; ------------------------------------------------------------
 ;; Updating one field of one process cannot introduce a
-;; recovering process provided that:
-;;
-;;   - nobody was recovering before the update, and
-;;
-;;   - if the updated field is :PROC-STATUS, its new value
-;;     is not :RECOVERING.
-;;
-;; If FIELD is anything other than :PROC-STATUS, the process
-;; status is unchanged.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -376,9 +379,6 @@
 
 ;; ------------------------------------------------------------
 ;; Reading :PROC-STATUS after replacing process I.
-;;
-;; If K = I, we read the status from the replacement P.
-;; Otherwise, process K is unchanged.
 ;; ------------------------------------------------------------
 
 (defthm proc-status-of-g-of-set-proc
@@ -398,10 +398,8 @@
     ((equal k i)))))
 
 
-;;-----------------------------------------------------------
-;; Replacing process I does not affect whether any process
-;; is recovering, provided the replacement has the same
-;; :PROC-STATUS as the old process.
+;; ------------------------------------------------------------
+;; Replacing process I does not affect whether any process is recovering, provided the replacement has the same :PROC-STATUS as the old process.
 ;; ------------------------------------------------------------
 
 (defthm
@@ -424,12 +422,7 @@
 
 
 ;; ------------------------------------------------------------
-;; A step classified as NO-RECOVERY-STEP-P cannot introduce
-;; a recovering process.
-;;
-;; If no process is recovering before the step, and the step
-;; does not perform any recovery action, then no process is
-;; recovering afterward.
+;; A step classified as NO-RECOVERY-STEP-P cannot introduce a recovering process.
 ;; ------------------------------------------------------------
 
 (defthm no-recovery-step-p-preserves-no-proc-recovering

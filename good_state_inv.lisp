@@ -1,3 +1,25 @@
+; MIT License
+;
+; Copyright (c) 2026 Mohammad Bin Monjil and Sandip Ray
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Book import
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -5,29 +27,11 @@
 (include-book "model")
 (include-book "basic")
 
-;; TODO:
-;; 1.   Strengthened: any recovery message must carry a sid known by all
-;;      processes.  The receiver-side condition follows from this when the
-;;      receiver is a valid process id.
-;;
-;; 2.   Add an invariant/lemma stating that if there is a  marker message at the
-;;      head of channel j -> i, then the sid of the msg must be known to be some
-;;      process
-;; 3.   
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Structural predicates
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Defines the well-formedness invariant for processes, snapshots, messages,
-;; channels, and the top-level implementation state.
 
 
 
 ;start definitions: status-and-snapshot-id-predicates
-;; Basic recognizers for allowed process statuses, snapshot statuses, and
-;; snapshot identifiers.  These are the leaf predicates used later by
-;; good-proc-p and good-snapshot-ids-list-p.
+;; Basic recognizers for allowed process statuses, snapshot statuses, and snapshot identifiers.
 
 (defun good-proc-status-p (x)
   (or (equal x :normal)
@@ -63,9 +67,6 @@
 
 ;start definitions: message-well-formedness
 ;; Marker and recovery messages have different sid-knowledge requirements:
-;;   - marker   : the sid must be known by at least one process;
-;;   - recovery : the sid must be known by every process.
-;; Normal messages do not need a sid check.
 
 
 (defun good-msg-p (msg ids procs)
@@ -328,7 +329,11 @@
 ;; ============================================================ 
 ;; CHECK ONE SNAPSHOT-ID LIST FOR ONE INITIATOR 
 ;; ============================================================ 
- 
+
+;; We call this function with a process id (initiator), counter value stored in that initiator and
+;; a list of snapshot-ids stored in another process. We check for each snapshot id, if the
+;; car(sid) matches the initiator id then cadr(sid) must be smaller than the initiator counter
+
 (defun stored-sids-for-initiator-have-smaller-counters-p 
   (initiator initiator-counter sids) 
  
@@ -351,9 +356,7 @@
        ((not (checkpoint-sid-p sid)) 
         nil) 
  
-       ;; If this SID belongs to INITIATOR, its stored 
-       ;; counter must be smaller than the initiator's 
-       ;; current counter. 
+       ;; If this SID belongs to INITIATOR, its stored counter must be smaller than the initiator's current counter.
        ((equal (first sid) initiator) 
         (< (second sid) 
            initiator-counter)) 
@@ -371,7 +374,9 @@
 ;; ============================================================ 
 ;; CHECK ALL STORED SIDS FOR ONE INITIATOR 
 ;; ============================================================ 
- 
+;; Take one initiator, compare snapshot-id list for process-ids
+;;  using stored-sids-for-initiator-have-smaller-counters-p
+
 (defun all-stored-sids-for-initiator-have-smaller-counters-p 
    (initiator ids procs) 
  
@@ -431,6 +436,10 @@
          (channels (channels st)))
     (and (true-listp ids)
          (uniquep ids)
+
+	 ;; Second element(counter) of all snapshot ids stored in all process
+	 ;; must be smaller than counter counter value in all processes if
+	 ;; the process id matches with first element of sid
 	 (all-initiators-stored-sids-have-smaller-counters-p 
 	  ids 
 	  ids 
@@ -1282,11 +1291,7 @@
 ;end target: good-state-p-preserved-by-nop
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Crash preservation
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; A crash only changes :proc-status to an allowed value.  Channels are
-;; unchanged because message well-formedness does not depend on proc-status.
 
 
 ;start support: crash-process-update-preservation
@@ -1588,11 +1593,7 @@
 ;end support: normal-channel-preservation-under-proc-update
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Compute-message channel preservation
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Compute sends append normal messages to outgoing channels.  The lemmas first
-;; handle one channel update, then lift to rows and the whole channel table.
 
 
 ;start support: compute-message-goodness
@@ -2211,11 +2212,7 @@
 ;end support: checkpoint-process-table-lift
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Generic outgoing-message send preservation
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Generalizes compute-send preservation to any good message.  The two-procs
-;; version supports proofs where process metadata is updated before sending.
 
 
 ;start definitions: process-table-compatibility-predicates
@@ -2491,11 +2488,7 @@
 ;end support: lift-generic-send-to-channel-table
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Start-checkpoint preservation
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; start-checkpoint-helper preserves neighbor structure, monotonically adds the
-;; new snapshot id, and sends a good marker message.
 
 
 ;start support: marker-message-goodness-after-start-checkpoint
@@ -2679,11 +2672,7 @@
 ;end target: good-state-p-of-system-step-start-checkpoint
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Start-recovery preservation
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; start-recovery-helper changes only recovery-related fields, preserves neighbor
-;; and snapshot-id structure, and sends a good recovery message.
 
 
 ;start support: start-recovery-field-preservation
@@ -3027,24 +3016,11 @@
 ;end target: good-state-p-of-system-step-recover
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; First-recovery-message preservation support
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Target theorem in this block:
-;;   good-state-p-of-handle-first-recovery-msg
-;;
-;; Proof idea:
-;;   1. The receiver process update preserves good-proc-p.
-;;   2. Removing the consumed recovery message preserves good-channels-p.
-;;   3. The forwarded recovery message is good under the updated procs.
-;;   4. The updated procs preserve outgoing-neighbor structure and snapshot ids.
-;;   5. Therefore handle-first-recovery-msg preserves good-state-p.
 
 
 ;start support: first-recovery-process-field-preservation
-;; These lemmas say that update-proc-for-first-recovery-msg only changes
-;; recovery-related fields.  Neighbor fields, snapshot ids, counter, and
-;; existing snapshot entries remain structurally usable.
+;; These lemmas say that update-proc-for-first-recovery-msg only changes recovery-related fields.
 
 (defthm nbrs-from-of-update-proc-for-first-recovery-msg
   (equal (g :nbrs-from
@@ -3083,10 +3059,7 @@
 
 
 ;start support: first-recovery-process-goodness
-;; Once the basic fields are controlled, prove that the updated receiver process
-;; still satisfies good-proc-p.  The sid must already exist at the receiver, and
-;; j must be a legal incoming neighbor because the first recovery message came
-;; from channel j -> i.
+;; Once the basic fields are controlled, prove that the updated receiver process still satisfies good-proc-p.
 
 (defthm good-snapshots-p-of-update-proc-for-first-recovery-msg
   (implies
@@ -3116,9 +3089,7 @@
 
 
 ;start support: remove-consumed-recovery-message
-;; Handling a recovery message first removes the head message from channel
-;; j -> i.  These lemmas show that this removal preserves message-list,
-;; channel-row, and full channel-table well-formedness.
+;; Handling a recovery message first removes the head message from channel j -> i.
 
 (defthm channel-state-of-remove-message-from-channel
   (equal (g src
@@ -3166,10 +3137,6 @@
 
 ;start support: recovery-message-goodness
 ;; A recovery message is good when its sid is known by every process.
-;; In the first-recovery case we still separately need the receiver to know
-;; the sid, because update-proc-for-first-recovery-msg restores receiver i
-;; from its local snapshot entry.  The all-process condition preserves
-;; message goodness before and after the receiver update.
 
 (defthm good-msg-p-of-get-msg-from-channel-when-recovery
   (implies
@@ -3206,10 +3173,6 @@
 
 ;start support: updated-procs-compatible-with-channel-preservation
 ;; The generic two-process channel-send lemma needs two compatibility facts:
-;;   - outgoing-neighbor structure is unchanged;
-;;   - snapshot-id sets are preserved/subset-related.
-;; These lemmas discharge those hypotheses for the one-process update used by
-;; handle-first-recovery-msg.
 
 (defthm nbrs-to-of-g-of-s-update-proc-for-first-recovery-msg
   (equal
@@ -3316,14 +3279,6 @@
 
 ;start target: good-state-p-of-handle-first-recovery-msg
 ;; Main target theorem for the first recovery-message case.
-;;
-;; handle-first-recovery-msg does three important things:
-;;   1. removes the consumed recovery message from channel j -> i;
-;;   2. updates receiver i from :normal to :recovering;
-;;   3. forwards the recovery message to i's outgoing neighbors.
-;;
-;; The supporting lemmas above prove each of those operations preserves the
-;; pieces needed by good-state-p.
 
 (defthm nbrs-from-of-g-of-s-update-proc-for-first-recovery-msg
   (equal
@@ -3443,9 +3398,7 @@
 ;;         (memberp j (proc-ids st))
 ;;         (memberp j (nbrs-from (g i (procs st))))
 
-;;         ;; msg is the first message on channel j -> i.
-;;         (equal msg
-;;                (get-msg-from-channel j i (channels st)))
+;; ;; msg is the first message on channel j -> i.
 
 ;;         ;; This is really a recovery message.
 ;;         (equal (msg-type msg) :recovery)
@@ -3453,10 +3406,7 @@
 ;;         ;; First recovery-message case: receiver has not started recovery yet.
 ;;         (equal (proc-status (g i (procs st))) :normal)
 
-;;         ;; The receiver has the snapshot being recovered.
-;;         ;; This is needed for the local recovery update.
-;;         (memberp (sid msg)
-;;                  (snapshot-ids (g i (procs st))))
+;; ;; The receiver has the snapshot being recovered.
 
 ;;         ;; New recovery-message invariant: the sid must be known by all
 ;;         ;; processes, because this message may be forwarded.
@@ -3475,18 +3425,10 @@
 ;; ;end target: good-state-p-of-handle-first-recovery-msg
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Non-first recovery-message preservation
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; This section handles the case where process i receives a recovery message
-;; while it is already in recovery mode.  The handler only removes sender j
-;; from i's waiting-recovery-from list.  If that list becomes empty, i returns
-;; to :normal; otherwise, i stays :recovering.
 
 ;start support: non-first-recovery-process-field-preservation
 ;; Field-level facts about update-proc-for-non-first-recovery-msg.
-;; These lemmas say exactly which fields are unchanged and which field is
-;; changed.  They keep ACL2 from opening the updater repeatedly in later proofs.
 
 (defthm nbrs-from-of-update-proc-for-non-first-recovery-msg
   (equal (g :nbrs-from
@@ -3519,8 +3461,6 @@
          (g :local-state p)))
 
 ;; The only status change is controlled by the remaining wait list.
-;; If all expected recovery messages have arrived, the process becomes normal;
-;; otherwise it remains recovering.
 (defthm proc-status-of-update-proc-for-non-first-recovery-msg
   (equal (g :proc-status
             (update-proc-for-non-first-recovery-msg p j))
@@ -3529,8 +3469,6 @@
              :recovering)))
 
 ;; Removing an element from a list cannot introduce a new element outside ys.
-;; This is used to preserve:
-;;   waiting-recovery-from subset nbrs-from.
 (defthm subset-of-remove-from-list-when-subset
   (implies
    (subset xs ys)
@@ -3542,9 +3480,6 @@
 
 ;start support: non-first-recovery-process-wellformedness
 ;; Lift the field-level facts to the full process invariant.
-;; Since snapshot ids, snapshots, local state, counter, and neighbors are
-;; unchanged, the main thing to preserve is that the shortened wait list is
-;; still a subset of nbrs-from.
 
 (defthm good-snapshots-p-of-update-proc-for-non-first-recovery-msg
   (implies
@@ -3570,8 +3505,6 @@
 
 ;start support: non-first-recovery-updated-procs-field-compatibility
 ;; Facts about reading fields from the process table after updating one process.
-;; These are needed because channel well-formedness depends on process metadata,
-;; especially outgoing neighbors and known snapshot ids.
 
 (defthm nbrs-to-of-g-of-s-update-proc-for-non-first-recovery-msg
   (equal
@@ -3607,9 +3540,7 @@
 
 
 ;start support: non-first-recovery-message-goodness-preservation
-;; Updating a process for a non-first recovery message does not change any
-;; process's snapshot-id list.  Therefore, any message that was good before the
-;; update is still good after the update.
+;; Updating a process for a non-first recovery message does not change any process's snapshot-id list.
 
 (defthm some-proc-has-snapshot-id-p-of-update-proc-for-non-first-recovery-msg
   (implies
@@ -3660,9 +3591,7 @@
 
 
 ;start support: non-first-recovery-channel-table-preservation
-;; Lift message-goodness preservation to channel rows and then to the whole
-;; channel table.  The channel contents are not changed by these lemmas; only
-;; the process table used to interpret channel/message well-formedness changes.
+;; Lift message-goodness preservation to channel rows and then to the whole channel table.
 
 (defthm good-channel-row-p-of-update-proc-for-non-first-recovery-msg
   (implies
@@ -3706,14 +3635,6 @@
 
 ;start target: good-state-p-of-handle-non-first-recovery-msg
 ;; Target theorem for the non-first recovery-message handler.
-;; Assumptions identify a valid channel j -> i, say that msg is the head of
-;; that channel, and require that i is not :normal.  Therefore this handler uses
-;; the non-first recovery case rather than the first recovery case.
-;;
-;; Proof idea:
-;; 1. remove-message-from-channel preserves good-channels-p;
-;; 2. update-proc-for-non-first-recovery-msg preserves good-proc-p for i;
-;; 3. the same update does not invalidate channel/message well-formedness.
 
 (defthm nbrs-from-of-g-of-s-update-proc-for-non-first-recovery-msg
   (equal
@@ -3827,9 +3748,7 @@
 ;;         (memberp j (proc-ids st))
 ;;         (memberp j (nbrs-from (g i (procs st))))
 
-;;         ;; msg is the first message on channel j -> i.
-;;         (equal msg
-;;                (get-msg-from-channel j i (channels st)))
+;; ;; msg is the first message on channel j -> i.
 
 ;;         ;; This is really a recovery message.
 ;;         (equal (msg-type msg) :recovery)
@@ -3851,17 +3770,6 @@
 
 ;start target: good-state-p-of-handle-recovery-msg
 ;; Dispatcher theorem for handle-recovery-msg.
-;; The handler splits into two cases based on receiver i's current status:
-;;
-;;   1. If i is :normal, this is the first recovery message for i.
-;;      Then the sid carried by msg must already be in i's snapshot-ids.
-;;
-;;   2. If i is not :normal, this is the non-first recovery case.
-;;      The theorem above handles that branch.
-;;
-;; The extra all-process hypothesis is the strengthened recovery-message
-;; invariant.  It also implies the receiver-side condition needed by the first
-;; branch, because valid receiver i is a member of proc-ids.
 
 ;; (defthm good-state-p-of-handle-recovery-msg
 ;;   (implies
@@ -3872,9 +3780,7 @@
 ;;         (memberp j (proc-ids st))
 ;;         (memberp j (nbrs-from (g i (procs st))))
 
-;;         ;; msg is the first message on channel j -> i.
-;;         (equal msg
-;;                (get-msg-from-channel j i (channels st)))
+;; ;; msg is the first message on channel j -> i.
 
 ;;         ;; This is really a recovery message.
 ;;         (equal (msg-type msg) :recovery)
@@ -4439,16 +4345,12 @@
 ;;     (memberp j (proc-ids st))
 ;;     (memberp j (nbrs-from (g i (procs st))))
 
-;;     ;; msg is the head of channel j -> i
-;;     (equal msg
-;;            (get-msg-from-channel j i (channels st)))
+;; ;; msg is the head of channel j -> i
 
 ;;     ;; marker-message case
 ;;     (equal (msg-type msg) :marker)
 
-;;     ;; first-marker case: receiver i does not yet know this sid
-;;     (not (memberp (sid msg)
-;;                   (snapshot-ids (g i (procs st)))))
+;; ;; first-marker case: receiver i does not yet know this sid
 
 ;;     ;; the marker sid is already known somewhere in the system
 ;;     (some-proc-has-snapshot-id-p
@@ -4639,8 +4541,6 @@
 
 ;start support: non-first-marker-updated-procs-field-compatibility
 ;; Facts about reading fields from the process table after updating one process.
-;; These are needed because channel well-formedness depends on process metadata,
-;; especially outgoing neighbors and known snapshot ids.
 
 (defthm nbrs-to-of-g-of-s-update-proc-for-non-first-marker-msg
   (equal
@@ -4679,9 +4579,7 @@
 
 
 ;start support: non-first-marker-message-goodness-preservation
-;; Updating a process for a non-first marker message does not change any
-;; process's snapshot-id list.  Therefore, any message that was good before the
-;; update is still good after the update.
+;; Updating a process for a non-first marker message does not change any process's snapshot-id list.
 
 (defthm some-proc-has-snapshot-id-p-of-update-proc-for-non-first-marker-msg
   (implies
@@ -4755,9 +4653,7 @@
 
 
 ;start support: non-first-marker-channel-table-preservation
-;; Lift message-goodness preservation to channel rows and then to the whole
-;; channel table.  The channel contents are not changed by these lemmas; only
-;; the process table used to interpret channel/message well-formedness changes.
+;; Lift message-goodness preservation to channel rows and then to the whole channel table.
 
 (defthm good-channel-row-p-of-update-proc-for-non-first-marker-msg
   (implies
@@ -4923,9 +4819,7 @@
 ;;     (memberp j (proc-ids st))
 ;;     (memberp j (nbrs-from (g i (procs st))))
 
-;;     ;; msg is the first message on channel j -> i.
-;;     (equal msg
-;;            (get-msg-from-channel j i (channels st)))
+;; ;; msg is the first message on channel j -> i.
 
 ;;     ;; This is really a marker message.
 ;;     (equal (msg-type msg) :marker)
@@ -5589,12 +5483,7 @@
     ids
     procs)))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Exact STEP-NORMAL process-table update.
-;;
-;; GOOD-STATE-P supplies the invariant before the transition. The generic
-;; equality above shows that the local-state-only process update preserves it.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defthm
   all-initiators-stored-sids-preserved-by-step-normal-procs-update
@@ -7896,15 +7785,7 @@
 
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Legal input sequence preserves good-state-p
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; If ST is good and INPUTS is a legal sequence starting from ST, then running
-;; the whole implementation trace keeps the final state good.
-;;
-;; This lifts the one-step theorem:
-;;   good-state-p-of-system-step-when-legal-inputp
-;; from one input to a whole input list.
 
 (defthm good-state-p-of-run-imp-when-legal-input-sequencep
   (implies
@@ -7956,20 +7837,10 @@
       all-ids))))
 
  
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Good spec channels
-;;
-;; Spec channels contain only normal/application messages.
-;; Marker and recovery messages are implementation-only and should not
-;; appear in the spec-level channel projection.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun good-spec-channel-p (src dst channels procs)
-  ;; If dst is an outgoing neighbor of src, then channel src -> dst
-  ;; must contain only normal messages.
-  ;;
-  ;; If dst is not an outgoing neighbor of src, then channel src -> dst
-  ;; must be empty.
+  ;; If dst is an outgoing neighbor of src, then channel src -> dst must contain only normal messages.
   (if (memberp dst (nbrs-to (g src procs)))
       (good-normal-msg-list-p
        (channel-state src dst channels))
@@ -8473,9 +8344,7 @@
 
 
 ;start support: remove-consumed-recovery-message
-;; Handling a recovery message first removes the head message from channel
-;; j -> i.  These lemmas show that this removal preserves message-list,
-;; channel-row, and full channel-table well-formedness.
+;; Handling a recovery message first removes the head message from channel j -> i.
 
 (defthm good-normal-msg-list-p-of-cdr
   (implies
