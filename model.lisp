@@ -208,14 +208,35 @@
 
 
 ;; Create a fresh snapshot entry.
-(defun make-snapshot-entry (local-snap-shot waiting-marker-from j)
-  (let ((cs (if j
-                (s j nil nil)   ;; explicit empty snapshot for channel j
-              nil)))
-    (>_ :status :checkpointing
-        :local-snap-shot local-snap-shot
-        :channel-snapshots cs
-        :waiting-marker-from waiting-marker-from)))
+;; (defun make-snapshot-entry (local-snap-shot waiting-marker-from j)
+;;   (let ((cs (if j
+;;                 (s j nil nil)   ;; explicit empty snapshot for channel j
+;;               nil)))
+;;     (>_ :status :checkpointing
+;;         :local-snap-shot local-snap-shot
+;;         :channel-snapshots cs
+;;         :waiting-marker-from waiting-marker-from)))
+
+(defun make-snapshot-entry
+    (local-snap-shot waiting-marker-from j)
+  (let ((cs
+         (if j
+             (s j nil nil)
+           nil)))
+
+    (>_ :status
+        (if (endp waiting-marker-from)
+            :done
+          :checkpointing)
+
+        :local-snap-shot
+        local-snap-shot
+
+        :channel-snapshots
+        cs
+
+        :waiting-marker-from
+        waiting-marker-from)))
 
 ;; Add sid to the snapshot-id list if it is not already present.
 (defun add-snapshot-id (sid ids)
@@ -1066,6 +1087,8 @@
  (local
   (defun make-proc-ids ()
     '(0 1 2)))
+ (defthm nil-not-member-of-proc-ids
+    (not(memberp nil (make-proc-ids))))
 
  (defthm make-proc-ids-true-listp
    (true-listp (make-proc-ids)))

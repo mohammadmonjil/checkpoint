@@ -122,13 +122,31 @@
     (and (good-normal-msg-list-p (g (first nbrs-from-i) cs))
          (good-channel-snapshot-record-p (rest nbrs-from-i) cs))))
 
+;; (defun good-snapshot-entry-p (entry nbrs-from-i)
+;;   (and (good-snapshot-status-p (snapshot-status entry))
+;;        (true-listp (snapshot-waiting-marker-from entry))
+;;        (uniquep (snapshot-waiting-marker-from entry))
+;;        (subset (snapshot-waiting-marker-from entry) nbrs-from-i)
+;;        (good-channel-snapshot-record-p nbrs-from-i
+;;                                        (snapshot-channel-snapshots entry))))
+
 (defun good-snapshot-entry-p (entry nbrs-from-i)
   (and (good-snapshot-status-p (snapshot-status entry))
        (true-listp (snapshot-waiting-marker-from entry))
        (uniquep (snapshot-waiting-marker-from entry))
        (subset (snapshot-waiting-marker-from entry) nbrs-from-i)
-       (good-channel-snapshot-record-p nbrs-from-i
-                                       (snapshot-channel-snapshots entry))))
+     ;; A snapshot still waiting for at least one marker must
+     ;; remain in the checkpointing state so that messages on
+     ;; its open incoming channels are recorded.
+     (equal
+      (equal
+       (snapshot-status entry)
+       :checkpointing)
+      (consp
+       (snapshot-waiting-marker-from entry)))
+     (good-channel-snapshot-record-p
+      nbrs-from-i
+      (snapshot-channel-snapshots entry))))
 
 (defun good-snapshots-p (snapshot-ids p nbrs-from-i ids)
   (declare (irrelevant ids))
@@ -436,7 +454,7 @@
          (channels (channels st)))
     (and (true-listp ids)
          (uniquep ids)
-
+         (not (memberp nil ids))
 	 ;; Second element(counter) of all snapshot ids stored in all process
 	 ;; must be smaller than counter counter value in all processes if
 	 ;; the process id matches with first element of sid
@@ -455,6 +473,9 @@
          (nbrs-to-from-consistent-p ids ids procs)
 
          (good-channels-p ids ids channels ids procs))))
+
+
+
 
 
 (defthm 
@@ -4441,32 +4462,259 @@
    ("Subgoal *1/2"
     :cases ((equal sid (car snapshot-ids))))))
 
-(defthm good-snapshots-p-of-set-sid-waiting-marker-from-remove
+
+(defthm true-listp-of-remove-from-list
+  (implies
+   (true-listp xs)
+   (true-listp
+    (remove-from-list xs x))))
+
+
+(defthm consp-of-remove-from-list-implies-consp
+  (implies
+   (consp
+    (remove-from-list xs x))
+   (consp xs)))
+
+
+(defthm good-snapshot-entry-p-of-remove-waiting-marker
+  (implies
+   (good-snapshot-entry-p entry nbrs-from)
+
+   (let* ((waiting
+           (remove-from-list
+            (snapshot-waiting-marker-from entry)
+            j))
+
+          (status
+           (if (endp waiting)
+               :done
+             (snapshot-status entry))))
+
+     (good-snapshot-entry-p
+      (s :status
+         status
+         (s :waiting-marker-from
+            waiting
+            entry))
+      nbrs-from)))
+
+  :hints
+  (("Goal"
+    :cases
+    ((consp
+      (remove-from-list
+       (snapshot-waiting-marker-from entry)
+       j))))))
+
+
+(defthm good-snapshot-entry-p-when-memberp-good-snapshots-p
   (implies
    (and
-    (good-snapshots-p snapshot-ids p nbrs-from ids)
+    (good-snapshots-p
+     snapshot-ids
+     p
+     nbrs-from
+     ids)
+
     (memberp sid snapshot-ids))
+
+   (good-snapshot-entry-p
+    (snapshot-entry sid p)
+    nbrs-from))
+
+  :hints
+  (("Goal"
+    :induct
+    (good-snapshots-p
+     snapshot-ids
+     p
+     nbrs-from
+     ids))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal sid (car snapshot-ids))))))
+
+
+(local-defthm true-listp-of-remove-from-list-local
+  (implies
+   (true-listp xs)
+   (true-listp
+    (remove-from-list xs x))))
+
+
+(local-defthm consp-remove-from-list-implies-consp-original
+  (implies
+   (consp
+    (remove-from-list xs x))
+   (consp xs)))
+
+
+(local-defthm
+  good-snapshot-entry-p-of-waiting-remove-when-consp
+
+  (let ((new-waiting
+         (remove-from-list
+          (snapshot-waiting-marker-from entry)
+          j)))
+
+    (implies
+     (and
+      (good-snapshot-entry-p
+       entry
+       nbrs-from)
+
+      (consp new-waiting))
+
+     (good-snapshot-entry-p
+      (s :status
+         (snapshot-status entry)
+         (s :waiting-marker-from
+            new-waiting
+            entry))
+      nbrs-from))))
+
+
+(local-defthm
+  memberp-good-snapshots-p-implies-good-snapshot-entry-p
+
+  (implies
+   (and
+    (good-snapshots-p
+     snapshot-ids
+     p
+     nbrs-from
+     ids)
+
+    (memberp
+     sid
+     snapshot-ids))
+
+   (good-snapshot-entry-p
+    (snapshot-entry sid p)
+    nbrs-from))
+
+  :hints
+  (("Goal"
+    :induct
+    (good-snapshots-p
+     snapshot-ids
+     p
+     nbrs-from
+     ids))
+
+   ("Subgoal *1/2"
+    :cases
+    ((equal sid
+            (car snapshot-ids))))))
+
+(defthm
+  good-snapshots-p-of-set-sid-waiting-marker-from-remove-when-consp
+
+  (implies
+   (and
+    (good-snapshots-p
+     snapshot-ids
+     p
+     nbrs-from
+     ids)
+
+    (memberp
+     sid
+     snapshot-ids)
+
+    (consp
+     (remove-from-list
+      (snapshot-waiting-marker-from
+       (snapshot-entry sid p))
+      j)))
+
    (good-snapshots-p
     snapshot-ids
+
     (s :snapshots
        (s sid
           (s :status
-             (g :status (g sid (g :snapshots p)))
+             (snapshot-status
+              (snapshot-entry sid p))
+
              (s :waiting-marker-from
                 (remove-from-list
-                 (g :waiting-marker-from
-                    (g sid (g :snapshots p)))
+                 (snapshot-waiting-marker-from
+                  (snapshot-entry sid p))
                  j)
-                (g sid (g :snapshots p))))
-          (g :snapshots p))
+
+                (snapshot-entry sid p)))
+
+          (snapshots p))
        p)
+
     nbrs-from
     ids))
+
   :hints
   (("Goal"
-    :induct (good-snapshots-p snapshot-ids p nbrs-from ids))
-   ("Subgoal *1/2"
-    :cases ((equal sid (car snapshot-ids))))))
+    :in-theory
+    (disable
+     good-snapshots-p
+     good-snapshot-entry-p))))
+
+
+
+(defthm good-snapshots-p-of-set-sid-waiting-marker-from-remove
+  (implies
+   (and
+    (good-snapshots-p
+     snapshot-ids
+     p
+     nbrs-from
+     ids)
+
+    (memberp
+     sid
+     snapshot-ids))
+
+   (let* ((entry
+           (snapshot-entry sid p))
+
+          (waiting
+           (remove-from-list
+            (snapshot-waiting-marker-from entry)
+            j))
+
+          (status
+           (if (endp waiting)
+               :done
+             (snapshot-status entry)))
+
+          (new-entry
+           (s :status
+              status
+              (s :waiting-marker-from
+                 waiting
+                 entry))))
+
+     (good-snapshots-p
+      snapshot-ids
+
+      (s :snapshots
+         (s sid
+            new-entry
+            (snapshots p))
+         p)
+
+      nbrs-from
+      ids)))
+
+  :hints
+  (("Goal"
+    :in-theory
+    (disable
+     good-snapshots-p
+     good-snapshot-entry-p))))
+
+
 
 (defthm good-snapshots-p-of-update-proc-for-non-first-marker-msg
   (implies
@@ -7810,7 +8058,153 @@
 
 
 
+;; Some useful corrolaries
 
+;; GOOD-PROC-P directly requires every incoming neighbor to be
+;; a member of IDS.
+(defthm good-proc-p-implies-nbrs-from-subset
+  (implies
+   (good-proc-p p ids)
+
+   (subset
+    (nbrs-from p)
+    ids)))
+
+
+;; Every incoming neighbor of a process in a good state is drawn
+;; from the process-ID list. We derive that from good-state-p
+
+(defthm nbrs-from-subset-proc-ids-when-good-state-p
+  (implies
+   (and
+    (good-state-p st)
+    (memberp i (proc-ids st)))
+
+   (subset
+    (nbrs-from
+     (g i (procs st)))
+    (proc-ids st))))
+
+
+;; Therefore, membership in the incoming-neighbor list implies
+;; membership in the process-ID list.
+(defthm incoming-nbr-memberp-proc-ids-when-good-state-p
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp i
+             (proc-ids st))
+
+    (memberp incoming-nbr
+             (nbrs-from
+              (g i (procs st)))))
+
+   (memberp incoming-nbr
+            (proc-ids st))))
+
+;; NIL is not a valid process identifier in a good state.
+(defthm good-state-p-implies-nil-not-memberp-proc-ids
+  (implies
+   (good-state-p st)
+
+   (not
+    (memberp nil
+             (proc-ids st)))))
+
+;; lemmas establishing good-state-p implies channel msg to be
+;; non nil when consp
+
+;; The first element of a nonempty good message list is a
+;; well-formed message and therefore cannot be NIL.
+(defthm good-msg-list-p-consp-implies-first-non-nil
+  (implies
+   (and
+    (good-msg-list-p msgs ids procs)
+    (consp msgs))
+
+   (not
+    (equal (first msgs)
+           nil))))
+
+
+;; A nonempty incoming channel in a good state has a non-NIL
+;; message at its head.
+(defthm good-state-p-implies-incoming-channel-head-non-nil
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp dst
+             (proc-ids st))
+
+    (memberp src
+             (nbrs-from
+              (g dst (procs st))))
+
+    (consp
+     (channel-state
+      src dst (channels st))))
+
+   (not
+    (equal
+     (first
+      (channel-state
+       src dst (channels st)))
+     nil)))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      incoming-nbr-memberp-proc-ids-when-good-state-p
+      (incoming-nbr src)
+      (i dst))
+
+     (:instance
+      good-msg-list-p-of-channel-state-when-good-state-p-nbrs-from
+      (j src)
+      (i dst))
+
+     (:instance
+      good-msg-list-p-consp-implies-first-non-nil
+      (msgs
+       (channel-state
+        src dst (channels st)))
+      (ids
+       (proc-ids st))
+      (procs
+       (procs st)))))))
+
+
+(defthm good-state-p-implies-incoming-channel-head-true
+  (implies
+   (and
+    (good-state-p st)
+
+    (memberp dst
+             (proc-ids st))
+
+    (memberp src
+             (nbrs-from
+              (g dst (procs st))))
+
+    (consp
+     (channel-state
+      src dst (channels st))))
+
+   (first
+    (channel-state
+     src dst (channels st))))
+
+  :hints
+  (("Goal"
+    :use
+    ((:instance
+      good-state-p-implies-incoming-channel-head-non-nil
+      (st st)
+      (src src)
+      (dst dst))))))
 
 
 ;start definitions: spec-state-well-formedness

@@ -243,6 +243,15 @@
    (uniquep xs)
    (uniquep (remove-from-list xs x))))
 
+(defthm memberp-and-not-memberp-implies-not-equal-reverse
+  (implies
+   (and
+    (memberp k xs)
+    (not (memberp j xs)))
+
+   (not
+    (equal j k))))
+
 ;; ------------------------------------------------------------
 ;; Reading :NBRS-FROM after replacing one process.
 ;; ------------------------------------------------------------
