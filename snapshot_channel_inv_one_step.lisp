@@ -354,12 +354,13 @@
 ;; To prove our one step preservation of the
 ;; main invariant, we need well-formedness of
 ;; the state w.r.t. to the marker algorithm
-;; We have two conditions for now
+;; We have three conditions for now
 ;; 1. If j is pre-cut, then channel j->i must
 ;; remain open
 ;; 2. If marker is in the channel
 ;;    then j is post-cut and the channel is open
-;;
+;; 3. There could be atmost one target marker in
+;;    the channel
 
 (defun target-channel-not-closed-p
     (j i m)
@@ -370,38 +371,73 @@
      (cm-waiting-marker-for m i))))
 
 
-(defun one-channel-cut-phase-consistent-p
-    (j i m imp-st)
-  (let* ((j-pre-cut-p
+(defun at-most-one-target-marker-p (target-sid channel)
+  (if (endp channel)
+      t
+    (if (target-marker-msg-p target-sid (first channel))
+        (not
+         (marker-for-sid-in-channel-p
+          target-sid (rest channel)))
+      (at-most-one-target-marker-p
+       target-sid (rest channel)))))
+
+
+(defun one-channel-cut-phase-consistent-p (j i m imp-st)
+  (let* ((target-sid
+          (cm-sid m))
+         (channel
+          (channel-state j i (channels imp-st)))
+         (j-pre-cut-p
           (cm-cut-not-taken-p m j))
-
          (channel-open-p
-          (target-channel-not-closed-p
-           j
-           i
-           m))
-
+          (target-channel-not-closed-p j i m))
          (marker-present-p
-          (marker-for-sid-in-channel-p
-           (cm-sid m)
-           (channel-state
-            j
-            i
-            (channels imp-st)))))
-
+          (marker-for-sid-in-channel-p target-sid channel)))
     (and
-     ;; I cannot close j -> i before J sends its marker.
+     (at-most-one-target-marker-p target-sid channel)
+
      (implies
       j-pre-cut-p
       channel-open-p)
 
-     ;; The marker is in transit exactly after J cuts and
-     ;; before I closes this channel.
      (equal
       marker-present-p
-      (and
-       (not j-pre-cut-p)
-       channel-open-p)))))
+      (and (not j-pre-cut-p)
+           channel-open-p)))))
+
+
+;; (defun one-channel-cut-phase-consistent-p
+;;     (j i m imp-st)
+;;   (let* ((j-pre-cut-p
+;;           (cm-cut-not-taken-p m j))
+
+;;          (channel-open-p
+;;           (target-channel-not-closed-p
+;;            j
+;;            i
+;;            m))
+
+;;          (marker-present-p
+;;           (marker-for-sid-in-channel-p
+;;            (cm-sid m)
+;;            (channel-state
+;;             j
+;;             i
+;;             (channels imp-st)))))
+
+;;     (and
+;;      ;; I cannot close j -> i before J sends its marker.
+;;      (implies
+;;       j-pre-cut-p
+;;       channel-open-p)
+
+;;      ;; The marker is in transit exactly after J cuts and
+;;      ;; before I closes this channel.
+;;      (equal
+;;       marker-present-p
+;;       (and
+;;        (not j-pre-cut-p)
+;;        channel-open-p)))))
 
 
 ;; Reconstruct the execution containing exactly the inputs that
