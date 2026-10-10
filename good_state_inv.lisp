@@ -119,16 +119,10 @@
 (defun good-channel-snapshot-record-p (nbrs-from-i cs)
   (if (endp nbrs-from-i)
       t
-    (and (good-normal-msg-list-p (g (first nbrs-from-i) cs))
-         (good-channel-snapshot-record-p (rest nbrs-from-i) cs))))
+      (and (good-normal-msg-list-p (g (first nbrs-from-i) cs))
+	   (true-listp (g (first nbrs-from-i) cs))
+           (good-channel-snapshot-record-p (rest nbrs-from-i) cs))))
 
-;; (defun good-snapshot-entry-p (entry nbrs-from-i)
-;;   (and (good-snapshot-status-p (snapshot-status entry))
-;;        (true-listp (snapshot-waiting-marker-from entry))
-;;        (uniquep (snapshot-waiting-marker-from entry))
-;;        (subset (snapshot-waiting-marker-from entry) nbrs-from-i)
-;;        (good-channel-snapshot-record-p nbrs-from-i
-;;                                        (snapshot-channel-snapshots entry))))
 
 (defun good-snapshot-entry-p (entry nbrs-from-i)
   (and (good-snapshot-status-p (snapshot-status entry))
