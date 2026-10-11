@@ -23,7 +23,7 @@
 
 (in-package "ACL2")
 
-(include-book "snap_ch_inv_preds_one_step")
+(include-book "snapshot_channel_preds")
 
 
 (defthm legal-inputp-of-before-state-when-process-uncut

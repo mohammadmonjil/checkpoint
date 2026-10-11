@@ -883,6 +883,15 @@
 
 
 
+(local-defthm
+  good-cut-meta-waiting-for-procs-p-of-s-after-cut-receives
+  (equal
+   (good-cut-meta-waiting-for-procs-p
+    ids
+    (s :after-cut-receives receives m))
+   (good-cut-meta-waiting-for-procs-p ids m)))
+
+
 (defthm
   good-cut-meta-p-preserved-by-process-cut-step
 
@@ -2734,6 +2743,37 @@
      good-state-p
      get-msg-from-channel
      some-proc-has-snapshot-id-p))))
+
+
+
+
+
+(local-defthm
+  cut-meta-imp-procs-consistent-p-of-s-after-cut-receives
+  (equal
+   (cut-meta-imp-procs-consistent-p
+    ids target-sid
+    (s :after-cut-receives receives m)
+    procs)
+   (cut-meta-imp-procs-consistent-p
+    ids target-sid m procs)))
+
+
+(local-defthm
+  cm-cut-not-taken-p-of-s-after-cut-receives
+  (equal
+   (cm-cut-not-taken-p
+    (s :after-cut-receives receives m)
+    i)
+   (cm-cut-not-taken-p m i)))
+
+
+(local-defthm
+  cm-cut-not-taken-of-s-after-cut-receives
+  (equal
+   (cm-cut-not-taken
+    (s :after-cut-receives receives m))
+   (cm-cut-not-taken m)))
 
 
 (defthm cut-meta-imp-consistent-p-preserved-by-step
@@ -4726,7 +4766,35 @@
 ;; ------------------------------------------------------------
 
 
+(local-defthm
+  cut-marker-in-transit-for-outgoing-nbrs-p-of-s-after-cut-receives
+  (equal
+   (cut-marker-in-transit-for-outgoing-nbrs-p
+    src outgoing-nbrs target-sid
+    (s :after-cut-receives receives m)
+    channels)
+   (cut-marker-in-transit-for-outgoing-nbrs-p
+    src outgoing-nbrs target-sid m channels)))
 
+
+(local-defthm
+  cut-markers-in-transit-for-srcs-p-of-s-after-cut-receives
+  (equal
+   (cut-markers-in-transit-for-srcs-p
+    srcs target-sid
+    (s :after-cut-receives receives m)
+    procs channels)
+   (cut-markers-in-transit-for-srcs-p
+    srcs target-sid m procs channels))
+  :hints
+  (("Goal"
+    :induct
+    (cut-markers-in-transit-for-srcs-p
+     srcs target-sid m procs channels)
+    :in-theory
+    (e/d
+     (cut-markers-in-transit-for-srcs-p)
+     (cut-marker-in-transit-for-outgoing-nbrs-p)))))
 
 
 

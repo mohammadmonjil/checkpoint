@@ -1,5 +1,5 @@
 (in-package "ACL2")
-(include-book "snapshot_channel_invariants_multistep")
+(include-book "snapshot_channel_inv_preserved")
 
 ; Before the cut, compare current local states. After the cut, compare
 ; the before-cut local state with the local state recorded for CM-SID.

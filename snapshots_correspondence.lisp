@@ -1,5 +1,5 @@
 (in-package "ACL2")
-(include-book "snapshot_local_invariant")
+(include-book "snapshot_local_inv")
 
 
 

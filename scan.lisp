@@ -53,18 +53,20 @@
 (defun cm-waiting-marker-from (m)
   (g :waiting-marker-from m))
 
-;; (defun cm-inputs-before-cut (m)
-;;   (g :inputs-before-cut m))
+;; Receiver i -> incoming sender j -> normal receive-input list.
+(defun cm-after-cut-receives (m)
+  (g :after-cut-receives m))
 
-;; ;; Existing channel-wise table:
-;; ;;   process i -> incoming neighbor j -> receive-input list.
-;; (defun cm-inputs-after-cut (m)
-;;   (g :inputs-after-cut m))
+(defun cm-after-cut-receives-get (m i j)
+  (g j (g i (cm-after-cut-receives m))))
 
-;; ;; Existing channel-wise table of the actual normal messages consumed by
-;; ;; the receive inputs in :inputs-after-cut.
-;; (defun cm-after-cut-msgs (m)
-;;   (g :after-cut-msgs m))
+(defun cm-after-cut-receives-append (m i j input)
+  (let* ((all   (cm-after-cut-receives m))
+         (rec-i (g i all))
+         (old   (g j rec-i))
+         (rec-i (s j (append old (list input)) rec-i))
+         (all   (s i rec-i all)))
+    (s :after-cut-receives all m)))
 
 ;; ------------------------------------------------------------------
 ;; New accessor: global post-cut ordinary-input sequence
@@ -113,6 +115,23 @@
 
 
 
+(defun make-after-cut-receives-for-proc (nbrs)
+  (if (endp nbrs)
+      nil
+    (s (first nbrs)
+       nil
+       (make-after-cut-receives-for-proc (rest nbrs)))))
+
+(defun make-after-cut-receives (proc-ids procs)
+  (if (endp proc-ids)
+      nil
+    (let* ((i         (first proc-ids))
+           (p         (g i procs))
+           (nbrs      (nbrs-from p))
+           (entry-i   (make-after-cut-receives-for-proc nbrs))
+           (rest-recs (make-after-cut-receives (rest proc-ids) procs)))
+      (s i entry-i rest-recs))))
+
 (defun make-empty-waiting-marker-from (proc-ids)
   (if (endp proc-ids)
       nil
@@ -126,12 +145,19 @@
   ;; Initial cut metadata before processing the target :start-checkpoint input.
   (declare (ignore initiator))
   (let* (
+         (procs    (procs st))
          (proc-ids (proc-ids st))
          (m        nil)
 
          ;; Global input sequences.
          (m        (s :after-cut-input-sequence nil m))
          (m        (s :before-cut-input-sequence nil m))
+
+         ;; Receive inputs consumed after a local cut and before the
+         ;; corresponding channel marker.  No messages are stored here.
+         (m        (s :after-cut-receives
+                      (make-after-cut-receives proc-ids procs)
+                      m))
 
          ;; No process has taken its cut yet, so nobody is
          ;; waiting for checkpoint markers yet.
@@ -201,6 +227,13 @@
 
 
 
+(defun process-cut-normal-receive (input i j m)
+  ;; Buffer only normal receives on channels whose marker is still pending.
+  (if (and (not (cm-cut-not-taken-p m i))
+           (memberp j (cm-waiting-marker-for m i)))
+      (cm-after-cut-receives-append m i j input)
+    m))
+
 (defun process-cut-receive (input st m)
   (let* ((i   (pid input))
          (j   (sender input))
@@ -212,9 +245,10 @@
            (equal (sid msg) sid))
       (process-cut-marker-receive i j st m))
 
-     ;; An actual ordinary receive is classified as pre or post.
+     ;; The global sequence was updated by PROCESS-CUT-STEP.  Collect
+     ;; this normal receive separately when its channel is still open.
      ((equal (msg-type msg) :normal)
-      m)
+      (process-cut-normal-receive input i j m))
 
      ;; Recovery messages, markers for another SID, and empty receives are
      ;; protocol/nonordinary steps for this scan.

@@ -1,7 +1,7 @@
 
 (in-package "ACL2")
 (include-book "model")
-(include-book "good_state_invariants")	
+(include-book "good_state_inv")	
 (include-book "channel_equivalence")
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Section 3: Compressed Input Generation 

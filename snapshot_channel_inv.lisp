@@ -3273,7 +3273,11 @@
   ((:rewrite :match-free :all)))
 
 
-
+(defthm cm-cut-not-taken-of-s-after-cut-receives
+  (equal
+   (cm-cut-not-taken
+    (s :after-cut-receives receives m))
+   (cm-cut-not-taken m)))
 
 
 (defthm

@@ -22,7 +22,7 @@
 
 (in-package "ACL2")
 
-(include-book "snap_ch_inv_one_step")
+(include-book "snapshot_channel_inv")
 
 ;; We will prove preservation of the required conditions of the
 ;; channel snapshot invariant for one system-step and process-cut-step

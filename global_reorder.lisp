@@ -2756,7 +2756,134 @@
     (cm-waiting-marker-for
      m
      j))))
-  
+
+
+
+;; Global input-sequence updates preserve the receive table.
+
+(local-defthm after-cut-receives-of-add-before-cut-input
+  (equal
+   (g :after-cut-receives
+      (cm-add-before-cut-input-sequence m input))
+   (g :after-cut-receives m)))
+
+
+(local-defthm after-cut-receives-of-add-after-cut-input
+  (equal
+   (g :after-cut-receives
+      (cm-add-after-cut-input-sequence m input))
+   (g :after-cut-receives m)))
+
+;; Global input-sequence updates preserve waiting-marker rows.
+
+(local-defthm waiting-marker-for-of-add-before-cut-input
+  (equal
+   (cm-waiting-marker-for
+    (cm-add-before-cut-input-sequence m input)
+    i)
+   (cm-waiting-marker-for m i)))
+
+
+(local-defthm waiting-marker-for-of-add-after-cut-input
+  (equal
+   (cm-waiting-marker-for
+    (cm-add-after-cut-input-sequence m input)
+    i)
+   (cm-waiting-marker-for m i)))
+
+;; Move the before-cut sequence update through a receive-table update.
+
+(local-defthm add-before-cut-input-of-s-after-cut-receives
+  (equal
+   (cm-add-before-cut-input-sequence
+    (s :after-cut-receives receives m)
+    input)
+   (s :after-cut-receives
+      receives
+      (cm-add-before-cut-input-sequence m input))))
+
+;; Receive-table updates preserve cut-status tests.
+
+(local-defthm cm-cut-not-taken-p-of-s-after-cut-receives
+  (equal
+   (cm-cut-not-taken-p
+    (s :after-cut-receives receives m)
+    i)
+   (cm-cut-not-taken-p m i)))
+
+
+
+(local-defthm
+  add-before-cut-input-of-cm-set-waiting-marker-for
+  (equal
+   (cm-add-before-cut-input-sequence
+    (cm-set-waiting-marker-for m i waiting)
+    input)
+   (cm-set-waiting-marker-for
+    (cm-add-before-cut-input-sequence m input)
+    i
+    waiting)))
+
+(local-defthm after-cut-receives-of-marker-receive-update
+  (equal
+   (g :after-cut-receives
+      (cm-set-waiting-marker-for
+       (cm-remove-cut-not-taken m removed-pid)
+       waiting-pid waiting))
+   (g :after-cut-receives m)))
+
+
+(local-defthm marker-receive-update-of-s-after-cut-receives
+  (equal
+   (cm-set-waiting-marker-for
+    (cm-remove-cut-not-taken
+     (s :after-cut-receives receives m)
+     removed-pid)
+    waiting-pid waiting)
+   (s :after-cut-receives
+      receives
+      (cm-set-waiting-marker-for
+       (cm-remove-cut-not-taken m removed-pid)
+       waiting-pid waiting))))
+
+
+
+(local-defthm get-msg-after-normal-system-step-when-consp
+  (implies
+   (and
+    (equal (ttype input) :normal)
+    (consp (channel-state src dst (channels st))))
+   (equal
+    (get-msg-from-channel
+     src dst (channels (system-step st input)))
+    (get-msg-from-channel src dst (channels st))))
+  :hints
+  (("Goal"
+    :in-theory
+     (disable send-compute-message get-msg-from-channel))))
+
+(local-defthm post-get-msg-unchanged-after-pre-normal
+  (implies
+   (and
+    (legal-input-sequencep st (list input-post input-pre))
+    (equal (ttype input-post) :receive)
+    (equal (ttype input-pre) :normal))
+   (equal
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels (system-step st input-pre)))
+    (get-msg-from-channel
+     (sender input-post)
+     (pid input-post)
+     (channels st))))
+  :hints
+  (("Goal"
+    :in-theory
+     (disable system-step
+      send-compute-message
+      get-msg-from-channel))))
+
 (defthm post-pre-two-process-cut-steps-commute
     (implies
      (and
